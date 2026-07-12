@@ -1,0 +1,147 @@
+/* explainer.css — styling specific to how-it-works.html */
+
+.param-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.param-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+
+.param-symbol {
+  display: block;
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent-dark);
+}
+
+.param-name {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin: 4px 0 10px;
+}
+
+.param-card p { margin: 0; font-size: 13px; line-height: 1.55; color: #5c5848; }
+
+.formula-card {
+  background: var(--dark);
+  color: #f2efe4;
+  border-radius: 14px;
+  padding: 28px 30px;
+}
+
+.formula-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: #cfcabb;
+  margin-bottom: 10px;
+}
+
+.formula {
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.7;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  margin: 6px 4px;
+}
+
+.frac-num, .frac-den {
+  padding: 2px 6px;
+  font-size: 13.5px;
+}
+
+.frac-num { border-bottom: 1.5px solid #f2efe4; }
+
+.sim-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 26px 28px;
+}
+
+.sim-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+.sim-slider label {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+
+.sim-slider label span { color: var(--accent-dark); font-weight: 700; }
+
+.sim-slider input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.sim-body {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 22px;
+  margin-bottom: 20px;
+}
+
+.sim-readout { min-width: 160px; }
+.sim-readout-label { display: block; font-family: var(--mono); font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.sim-readout-value { font-family: var(--serif); font-size: 40px; font-weight: 700; color: var(--accent-dark); line-height: 1; }
+.sim-readout-value .pct-sign { font-size: 20px; margin-left: 2px; }
+.sim-readout-status { display: block; margin-top: 8px; font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.sim-readout-status.mastered { color: var(--accent); }
+
+.sim-spark { flex: 1; min-width: 220px; height: 90px; }
+
+.sim-history { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.sim-history-chip {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 4px 9px;
+  border-radius: 999px;
+}
+.sim-history-chip.correct { background: var(--accent-soft); color: var(--accent-dark); }
+.sim-history-chip.incorrect { background: var(--bad-soft); color: var(--bad); }
+
+@media (max-width: 640px) {
+  .formula-card { padding: 20px; }
+  .formula { font-size: 12.5px; }
+  .sim-card { padding: 20px; }
+}

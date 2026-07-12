@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="How Mentora's Bayesian Knowledge Tracing engine works — the math behind the mastery model, with a live interactive simulator." />
+<title>How it works — Mentora</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><rect width=%2232%22 height=%2232%22 rx=%226%22 fill=%22%231b1a14%22/><path d=%22M14 6 L6 16 L14 26%22 stroke=%22%23f7f4ec%22 stroke-width=%222.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22 fill=%22none%22/><path d=%22M22 6 L14 16 L22 26%22 stroke=%22%233f5d3a%22 stroke-width=%222.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22 fill=%22none%22/></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;0,800;1,600&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="explainer.css" />
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <div class="brand">
+      <a href="index.html" style="display:flex;align-items:center;gap:12px;color:inherit;text-decoration:none;">
+        <div>
+          <h1>Mentora</h1>
+          <span class="tag">Adaptive tutor · Bayesian Knowledge Tracing</span>
+        </div>
+      </a>
+    </div>
+    <nav class="site-nav" aria-label="Mentora pages">
+      <a href="index.html">Lesson</a>
+      <a href="how-it-works.html" class="active">How it works</a>
+      <a href="teacher.html">Teacher view</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section>
+    <span class="eyebrow">The model</span>
+    <h2 class="section-title">A real ML model, not a chat log</h2>
+    <p class="section-desc">Most "AI tutor" demos just chat with the student and hope something sticks. Mentora instead runs every answer through <strong>Bayesian Knowledge Tracing</strong> (Corbett &amp; Anderson, 1994) — a probabilistic latent-variable model that turns a stream of right/wrong answers into a calibrated probability the student has actually learned a concept. It's the same class of model used in production tutoring systems like Carnegie Learning and ALEKS.</p>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="section-block">
+    <span class="eyebrow">Parameters</span>
+    <h2 class="section-title">Four numbers describe a learner</h2>
+    <p class="section-desc">Each concept gets its own tracer with four parameters. None of this is prompt engineering — it's a small closed-form statistical model, fully unit-tested in <code>bkt.test.js</code>.</p>
+    <div class="param-grid">
+      <div class="param-card">
+        <span class="param-symbol">P(L₀)</span>
+        <span class="param-name">pInit</span>
+        <p>Prior probability the student already knows the concept before any instruction.</p>
+      </div>
+      <div class="param-card">
+        <span class="param-symbol">P(T)</span>
+        <span class="param-name">pLearn</span>
+        <p>Probability of transitioning from "not known" to "known" after one learning opportunity.</p>
+      </div>
+      <div class="param-card">
+        <span class="param-symbol">P(S)</span>
+        <span class="param-name">pSlip</span>
+        <p>Probability of answering incorrectly <em>despite</em> knowing the concept — a careless mistake.</p>
+      </div>
+      <div class="param-card">
+        <span class="param-symbol">P(G)</span>
+        <span class="param-name">pGuess</span>
+        <p>Probability of answering correctly <em>despite not</em> knowing the concept — a lucky guess.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="section-block">
+    <span class="eyebrow">The update</span>
+    <h2 class="section-title">The Bayes update, in full</h2>
+    <p class="section-desc">On every observed answer, Mentora computes a posterior mastery estimate P(L<sub>t</sub>), then — only if the answer was correct — applies the learning transition on top of it.</p>
+
+    <div class="formula-card">
+      <div class="formula-label">If the answer is correct:</div>
+      <div class="formula">
+        P(L<sub>t</sub> | correct) &nbsp;=&nbsp;
+        <span class="frac">
+          <span class="frac-num">P(L<sub>t</sub>)&middot;(1&minus;pSlip)</span>
+          <span class="frac-den">P(L<sub>t</sub>)&middot;(1&minus;pSlip) + (1&minus;P(L<sub>t</sub>))&middot;pGuess</span>
+        </span>
+      </div>
+      <div class="formula-label" style="margin-top:22px;">If the answer is incorrect:</div>
+      <div class="formula">
+        P(L<sub>t</sub> | incorrect) &nbsp;=&nbsp;
+        <span class="frac">
+          <span class="frac-num">P(L<sub>t</sub>)&middot;pSlip</span>
+          <span class="frac-den">P(L<sub>t</sub>)&middot;pSlip + (1&minus;P(L<sub>t</sub>))&middot;(1&minus;pGuess)</span>
+        </span>
+      </div>
+      <div class="formula-label" style="margin-top:22px;">Then, only on a correct answer, the learning transition:</div>
+      <div class="formula">
+        P(L<sub>t+1</sub>) &nbsp;=&nbsp; P(L<sub>t</sub>|correct) + (1&minus;P(L<sub>t</sub>|correct))&middot;pLearn
+      </div>
+    </div>
+
+    <p class="section-desc" style="margin-top:18px;">
+      <strong>Why gate the learning transition on correctness?</strong> Classic BKT applies pLearn after every observation, reasoning that any attempt is a learning opportunity. In practice, with a non-trivial pLearn, that unconditional bump can swamp the evidence step — a wrong answer could still net-increase mastery, which looks broken live: mastery should visibly <em>drop</em> when you get something wrong. Gating pLearn to fire only on correct answers keeps wrong answers honest.
+    </p>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="section-block">
+    <span class="eyebrow">Try it yourself</span>
+    <h2 class="section-title">Live simulator</h2>
+    <p class="section-desc">Drag the parameters, then feed the tracer correct or incorrect answers and watch the posterior mastery estimate move in real time — the exact same engine (<code>bkt.js</code>) that runs during a real Mentora lesson.</p>
+
+    <div class="sim-card">
+      <div class="sim-controls">
+        <div class="sim-slider">
+          <label>pInit <span id="valPInit">0.25</span></label>
+          <input type="range" id="sInit" min="0" max="1" step="0.01" value="0.25" />
+        </div>
+        <div class="sim-slider">
+          <label>pLearn <span id="valPLearn">0.30</span></label>
+          <input type="range" id="sLearn" min="0" max="1" step="0.01" value="0.3" />
+        </div>
+        <div class="sim-slider">
+          <label>pSlip <span id="valPSlip">0.10</span></label>
+          <input type="range" id="sSlip" min="0" max="0.99" step="0.01" value="0.1" />
+        </div>
+        <div class="sim-slider">
+          <label>pGuess <span id="valPGuess">0.22</span></label>
+          <input type="range" id="sGuess" min="0" max="0.99" step="0.01" value="0.22" />
+        </div>
+      </div>
+
+      <div class="sim-body">
+        <div class="sim-readout">
+          <span class="sim-readout-label">Current mastery P(L<sub>t</sub>)</span>
+          <div class="sim-readout-value"><span id="simPct">25</span><span class="pct-sign">%</span></div>
+          <span class="sim-readout-status" id="simStatus">Not yet mastered</span>
+        </div>
+        <svg id="simSpark" viewBox="0 0 400 90" preserveAspectRatio="none" class="sim-spark"></svg>
+      </div>
+
+      <div class="action-row">
+        <button class="primary-btn" id="btnCorrect">Simulate correct answer</button>
+        <button class="secondary-btn" id="btnIncorrect">Simulate incorrect answer</button>
+        <button class="ghost-btn" id="btnReset">Reset tracer</button>
+      </div>
+      <div class="sim-history" id="simHistory"></div>
+    </div>
+  </section>
+</main>
+
+<footer>Built for the <span class="footer-highlight">Prometheus July AI Challenge</span> · Mentora</footer>
+
+<script src="bkt.js"></script>
+<script src="explainer.js"></script>
+</body>
+</html>

@@ -3,77 +3,123 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="Mentora — an adaptive AI tutor that pairs Claude/Gemini with a real Bayesian Knowledge Tracing model to track what you've actually learned." />
 <title>Mentora — Adaptive AI Learning Companion</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><rect width=%2232%22 height=%2232%22 rx=%226%22 fill=%22%231b1a14%22/><path d=%22M14 6 L6 16 L14 26%22 stroke=%22%23f7f4ec%22 stroke-width=%222.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22 fill=%22none%22/><path d=%22M22 6 L14 16 L22 26%22 stroke=%22%233f5d3a%22 stroke-width=%222.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22 fill=%22none%22/></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;0,800;1,600&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 <header>
-  <h1>🧠 Mentora</h1>
-  <span class="tag">Adaptive AI tutor powered by Claude + Bayesian Knowledge Tracing</span>
+  <div class="header-inner">
+    <div class="brand">
+      <div>
+        <h1>Mentora</h1>
+        <span class="tag">Adaptive tutor · Bayesian Knowledge Tracing</span>
+      </div>
+    </div>
+    <div class="header-progress hidden" id="headerProgress">
+      <div class="header-progress-row">
+        <span class="header-progress-label">Overall mastery</span>
+        <div class="header-progress-value"><span id="overallProgressPct">0</span><span class="pct-sign">%</span></div>
+      </div>
+      <div class="bar-track header-bar-track"><div class="bar-fill" id="overallProgressFill" style="width:0%"></div></div>
+    </div>
+    <nav class="site-nav" aria-label="Mentora pages">
+      <a href="index.html" class="active">Lesson</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="teacher.html">Teacher view</a>
+    </nav>
+  </div>
 </header>
 
 <main>
-  <section id="setupView" class="card">
-    <div class="row" style="flex-direction:column; align-items:stretch;">
-      <label for="providerSelect">AI provider</label>
-      <div class="row">
+  <section id="setupView">
+    <span class="eyebrow">New lesson</span>
+    <h2 class="section-title">Start a lesson</h2>
+    <p class="section-desc">Paste anything you're trying to learn. Mentora will map it into concepts, quiz you, and track what you've actually mastered — live.</p>
+
+    <div class="value-strip">
+      <p><strong>Not another chat-wrapper tutor.</strong> Every answer you give updates a real probabilistic model — <a href="how-it-works.html">Bayesian Knowledge Tracing</a>, the technique behind systems like Carnegie Learning — that estimates the actual likelihood you've learned each concept. Claude/Gemini generate the content; the model decides what's truly mastered and what to teach next.</p>
+    </div>
+
+    <div class="setup-card">
+      <div class="field-group">
+        <label for="providerSelect">AI provider</label>
         <select id="providerSelect">
-          <option value="gemini">Google Gemini (free tier, no card, no expiration)</option>
-          <option value="claude">Anthropic Claude ($5 free credit on signup)</option>
+          <option value="gemini">Google Gemini — free tier, no card, no expiration</option>
+          <option value="claude">Anthropic Claude — $5 free credit on signup</option>
         </select>
       </div>
-      <label for="apiKeyInput" id="apiKeyLabel">Gemini API key (stored only in your browser) — get one free at aistudio.google.com/apikey</label>
-      <div class="row">
-        <input type="password" id="apiKeyInput" placeholder="paste your API key" />
-        <button class="ghost-btn" id="saveKeyBtn">Save</button>
+
+      <div class="field-group">
+        <label for="apiKeyInput" id="apiKeyLabel">Gemini API key (stored only in your browser)</label>
+        <div class="key-row">
+          <input type="password" id="apiKeyInput" placeholder="paste your API key" autocomplete="off" />
+          <button class="ghost-btn" id="saveKeyBtn">Save</button>
+        </div>
+        <span class="hint" id="keyHint">Get a free key at aistudio.google.com/apikey</span>
       </div>
-    </div>
 
-    <label for="materialInput">Paste study material (notes, an article, a textbook section)</label>
-    <textarea id="materialInput" placeholder="Paste anything you're trying to learn..."></textarea>
+      <div class="field-group">
+        <label for="materialInput">Study material</label>
+        <textarea id="materialInput" placeholder="Paste your notes, an article, or a textbook section..."></textarea>
+      </div>
 
-    <div class="row" style="margin-top:16px;">
-      <button class="primary-btn" id="generateBtn">Build my adaptive lesson</button>
-      <button class="secondary-btn" id="demoBtn">Try Demo (no API key needed)</button>
+      <div class="action-row">
+        <button class="primary-btn" id="generateBtn">Build my adaptive lesson</button>
+        <button class="secondary-btn" id="demoBtn">Try Demo (no API key needed)</button>
+      </div>
+      <div id="statusMsg" role="status" aria-live="polite"></div>
     </div>
-    <div id="statusMsg"></div>
   </section>
 
   <section id="learnView" class="hidden">
-    <div class="card">
-      <h2 style="margin-top:0;">Concept map</h2>
+    <hr class="rule" />
+
+    <div class="section-block">
+      <span class="eyebrow">Dependency graph</span>
+      <h2 class="section-title">Concept map</h2>
+      <p class="section-desc">Each concept unlocks only once its prerequisites reach mastery. The engine traces retention node by node.</p>
       <div class="concept-graph" id="conceptGraph"></div>
     </div>
 
-    <div class="card">
-      <h2 style="margin-top:0;">Mastery dashboard <span style="font-weight:400;font-size:13px;color:#64748b;">(live, from the Bayesian Knowledge Tracing engine)</span></h2>
+    <hr class="rule" />
+
+    <div class="section-block">
+      <span class="eyebrow">Retention model</span>
+      <div class="section-heading-row">
+        <div>
+          <h2 class="section-title">Mastery dashboard</h2>
+          <p class="section-desc">Live posterior estimates from the Bayesian Knowledge Tracing engine — probability of recall, not a raw score.</p>
+        </div>
+        <span class="threshold-caption">- - - - - Mastery threshold 85%</span>
+      </div>
       <div id="dashboard"></div>
     </div>
 
-    <div class="card">
+    <hr class="rule" />
+
+    <div class="section-block">
       <div id="recommendation"></div>
       <div id="quizPanel"></div>
 
       <div id="analogyPanel" class="hidden">
-        <hr style="margin:18px 0;border:none;border-top:1px solid #e2e8f0;" />
-        <strong>Want it explained a different way?</strong>
+        <hr class="divider" />
+        <strong class="analogy-title">Want it explained a different way?</strong>
         <div class="analogy-choices" id="analogyChoices">
-          <button class="ghost-btn" data-domain="cooking">🍳 Cooking</button>
-          <button class="ghost-btn" data-domain="sports">🏅 Sports</button>
-          <button class="ghost-btn" data-domain="gaming">🎮 Gaming</button>
-          <button class="ghost-btn" data-domain="music">🎵 Music</button>
+          <button class="chip-btn" data-domain="cooking">Cooking</button>
+          <button class="chip-btn" data-domain="sports">Sports</button>
+          <button class="chip-btn" data-domain="gaming">Gaming</button>
+          <button class="chip-btn" data-domain="music">Music</button>
         </div>
         <div id="analogyResult"></div>
       </div>
     </div>
-
-    <button class="ghost-btn" id="restartBtn">Start over with new material</button>
   </section>
 </main>
 
-<footer>Built for the Prometheus July AI Challenge — Mentora</footer>
-
-<script src="bkt.js"></script>
-<script src="app.js"></script>
-</body>
-</html>
+<div id="loadingOverlay" class="loading-overlay hidden" role="status" aria-live="polite">
+  <div class="loading-card">

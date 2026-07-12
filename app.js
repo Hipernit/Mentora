@@ -51,10 +51,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function cacheEls() {
   [
-    "providerSelect", "apiKeyLabel", "apiKeyInput", "saveKeyBtn", "materialInput", "generateBtn", "statusMsg",
+    "providerSelect", "apiKeyLabel", "apiKeyInput", "saveKeyBtn", "keyHint", "materialInput", "generateBtn", "statusMsg",
     "setupView", "learnView", "conceptGraph", "quizPanel", "dashboard",
     "recommendation", "analogyPanel", "analogyChoices", "analogyResult",
-    "demoBtn", "restartBtn",
+    "demoBtn",
+    "headerProgress", "overallProgressFill", "overallProgressPct",
+    "loadingOverlay", "loadingText",
   ].forEach((id) => (els[id] = document.getElementById(id)));
 }
 
@@ -71,7 +73,9 @@ function bindEvents() {
   });
   els.generateBtn.addEventListener("click", () => generateCourse(false));
   els.demoBtn.addEventListener("click", () => generateCourse(true));
-  els.restartBtn.addEventListener("click", () => location.reload());
+  // Restart is only offered from the completion banner once the lesson is
+  // fully mastered (see advanceToRecommended) — there's no general-purpose
+  // "start over" button cluttering the UI mid-lesson.
 }
 
 function syncProviderUI() {
@@ -79,6 +83,10 @@ function syncProviderUI() {
   els.apiKeyLabel.textContent = p.keyLabel;
   els.apiKeyInput.placeholder = p.placeholder;
   els.apiKeyInput.value = localStorage.getItem(`mentora_api_key_${state.provider}`) || "";
+  els.keyHint.innerHTML =
+    state.provider === "gemini"
+      ? `Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>`
+      : `Get a key (with $5 free credit) at <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>`;
 }
 
 function currentApiKey() {
@@ -88,6 +96,12 @@ function currentApiKey() {
 function setStatus(msg, isError = false) {
   els.statusMsg.textContent = msg;
   els.statusMsg.style.color = isError ? "#dc2626" : "#475569";
+}
+
+/** Shows/hides the full-screen loading overlay used during API calls. */
+function showLoading(visible, text = "Working...") {
+  els.loadingText.textContent = text;
+  els.loadingOverlay.classList.toggle("hidden", !visible);
 }
 
 /* ------------------------------ LLM dispatcher ----------------------------- */
@@ -247,14 +261,19 @@ async function generateCourse(demo) {
   els.generateBtn.disabled = true;
   els.demoBtn.disabled = true;
   try {
-    setStatus(demo ? "Loading demo lesson..." : `Extracting concepts with ${PROVIDERS[state.provider].label}...`);
+    if (demo) {
+      showLoading(true, "Loading demo lesson...");
+    } else {
+      showLoading(true, `Extracting concepts with ${PROVIDERS[state.provider].label}...`);
+    }
     state.concepts = demo ? DEMO_CONCEPTS : await extractConcepts(material);
 
     if (demo) {
       state.quizzes = DEMO_QUIZZES;
     } else {
-      setStatus("Generating quiz questions per concept...");
-      for (const c of state.concepts) {
+      for (let i = 0; i < state.concepts.length; i++) {
+        const c = state.concepts[i];
+        showLoading(true, `Writing quiz ${i + 1} of ${state.concepts.length}: ${c.label}...`);
         state.quizzes[c.id] = await generateQuiz(c, material);
       }
     }
@@ -264,6 +283,7 @@ async function generateCourse(demo) {
 
     els.setupView.classList.add("hidden");
     els.learnView.classList.remove("hidden");
+    els.headerProgress.classList.remove("hidden");
     renderGraph();
     renderDashboard();
     advanceToRecommended();
@@ -272,6 +292,7 @@ async function generateCourse(demo) {
     console.error(err);
     setStatus(`Error: ${err.message}`, true);
   } finally {
+    showLoading(false);
     els.generateBtn.disabled = false;
     els.demoBtn.disabled = false;
   }
@@ -281,19 +302,63 @@ function advanceToRecommended() {
   const next = state.model.recommendNext();
   els.analogyPanel.classList.add("hidden");
   if (!next) {
-    els.quizPanel.innerHTML = `<div class="mastered-banner">🎉 All concepts mastered! Overall mastery: ${(state.model.overallMastery() * 100).toFixed(0)}%</div>`;
-    els.recommendation.textContent = "Course complete.";
+    const overallPct = Math.round(state.model.overallMastery() * 100);
+    const count = state.concepts.length;
+    els.quizPanel.innerHTML = `
+      <div class="completion-banner">
+        <span class="completion-pill">Course complete</span>
+        <div class="completion-text">
+          <h3>All ${count} concept${count === 1 ? "" : "s"} mastered.</h3>
+          <p>Overall retention holding at ${overallPct}% across the full prerequisite graph.</p>
+        </div>
+        <button class="completion-btn" id="completionRestartBtn">Start over with new material &rarr;</button>
+      </div>`;
+    els.recommendation.textContent = "";
+    document.getElementById("completionRestartBtn")?.addEventListener("click", () => location.reload());
+    renderGraph();
     return;
   }
   state.currentConcept = next;
   state.currentQuestionIdx = 0;
-  els.recommendation.textContent = `Next up: ${next.label} (current mastery ${(state.model.getMastery(next.id) * 100).toFixed(0)}%)`;
+  els.recommendation.textContent = `Next up · ${next.label} · current mastery ${(state.model.getMastery(next.id) * 100).toFixed(0)}%`;
+  renderGraph();
   renderQuestion();
+}
+
+/** Builds a stable "C01" style display code for a concept from its position in the graph. */
+function conceptCode(index) {
+  return `C${String(index + 1).padStart(2, "0")}`;
 }
 
 function renderGraph() {
   els.conceptGraph.innerHTML = state.concepts
-    .map((c) => `<div class="node" id="node-${c.id}">${c.label}${c.dependsOn.length ? `<span class="deps">depends on: ${c.dependsOn.map((d) => state.concepts.find((x) => x.id === d)?.label).join(", ")}</span>` : ""}</div>`)
+    .map((c, i) => {
+      const mastery = state.model ? state.model.getMastery(c.id) : c.dependsOn.length ? 0 : 0.25;
+      const mastered = state.model ? state.model.tracers[c.id].isMastered() : false;
+      const depsMet = c.dependsOn.every((d) => state.model && state.model.tracers[d]?.isMastered());
+      const locked = !mastered && c.dependsOn.length > 0 && !depsMet;
+      const isCurrent = state.currentConcept?.id === c.id;
+      const stateClass = mastered ? "mastered" : locked ? "locked" : isCurrent ? "in-progress current" : "in-progress";
+      const statusLabel = mastered ? "Mastered" : locked ? "Locked" : isCurrent ? "In progress" : "Available";
+      const statusSub = c.dependsOn.length
+        ? `requires ${c.dependsOn.map((d) => conceptCode(state.concepts.findIndex((x) => x.id === d))).join(", ")}`
+        : "root concept";
+      const pct = Math.round((mastery ?? 0) * 100);
+      return `<div class="concept-card ${stateClass}" id="node-${c.id}">
+        <div class="concept-card-top">
+          <span class="concept-name">${c.label}</span>
+          <span class="concept-code">${conceptCode(i)}</span>
+        </div>
+        <div class="concept-card-bottom">
+          <div class="concept-status">
+            <span class="status-label">${statusLabel}</span>
+            <span class="status-sub">${statusSub}</span>
+          </div>
+          <span class="concept-pct">${pct}%</span>
+        </div>
+        <div class="concept-card-bar"><div class="concept-card-bar-fill" style="width:${pct}%"></div></div>
+      </div>`;
+    })
     .join("");
 }
 
@@ -302,7 +367,7 @@ function renderDashboard() {
   els.dashboard.innerHTML = snap
     .map((s) => {
       const pct = Math.round(s.mastery * 100);
-      const color = s.mastered ? "#16a34a" : pct > 50 ? "#d97706" : "#dc2626";
+      const color = s.mastered ? "#3f5d3a" : pct > 50 ? "#a9822e" : "#a13c2f";
       return `<div class="bar-row">
         <span class="bar-label">${s.label}</span>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div>
@@ -310,6 +375,15 @@ function renderDashboard() {
       </div>`;
     })
     .join("");
+  updateHeaderProgress();
+}
+
+function updateHeaderProgress() {
+  if (!state.model) return;
+  const pct = Math.round(state.model.overallMastery() * 100);
+  els.overallProgressFill.style.width = `${pct}%`;
+  els.overallProgressFill.style.background = pct >= 85 ? "#3f5d3a" : pct > 50 ? "#a9822e" : "#a13c2f";
+  els.overallProgressPct.textContent = `${pct}`;
 }
 
 function renderQuestion() {
@@ -333,6 +407,7 @@ function handleAnswer(chosenIdx, correctIdx) {
   const concept = state.currentConcept;
   const newMastery = state.model.recordAnswer(concept.id, correct);
   renderDashboard();
+  renderGraph();
 
   const buttons = els.quizPanel.querySelectorAll(".choice-btn");
   buttons.forEach((b, i) => {
@@ -342,10 +417,10 @@ function handleAnswer(chosenIdx, correctIdx) {
   });
 
   const feedback = document.createElement("div");
-  feedback.className = "feedback";
+  feedback.className = `feedback ${correct ? "feedback-correct" : "feedback-incorrect"}`;
   feedback.innerHTML = correct
-    ? `✅ Correct. Mastery of "${concept.label}" is now ${(newMastery * 100).toFixed(0)}%.`
-    : `❌ Not quite. Mastery of "${concept.label}" is now ${(newMastery * 100).toFixed(0)}%.`;
+    ? `Correct. Mastery of "${concept.label}" is now ${(newMastery * 100).toFixed(0)}%.`
+    : `Not quite. Mastery of "${concept.label}" is now ${(newMastery * 100).toFixed(0)}%.`;
   els.quizPanel.appendChild(feedback);
 
   if (!correct) offerAnalogyReview(concept);
@@ -370,7 +445,8 @@ function offerAnalogyReview(concept) {
   els.analogyResult.textContent = "";
   els.analogyChoices.querySelectorAll("button").forEach((btn) => {
     btn.onclick = async () => {
-      els.analogyResult.textContent = "Generating a tailored explanation...";
+      els.analogyResult.textContent = "";
+      if (!state.demoMode) showLoading(true, `Writing a ${btn.dataset.domain} analogy...`);
       try {
         const text = state.demoMode
           ? demoAnalogy(concept, btn.dataset.domain)
@@ -378,6 +454,8 @@ function offerAnalogyReview(concept) {
         els.analogyResult.textContent = text;
       } catch (err) {
         els.analogyResult.textContent = `Error: ${err.message}`;
+      } finally {
+        showLoading(false);
       }
     };
   });

@@ -1,0 +1,124 @@
+/* teacher.css — styling specific to teacher.html */
+
+.sim-note {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  border-left: 2.5px solid var(--border-strong);
+  padding-left: 12px;
+  max-width: 640px;
+  line-height: 1.6;
+}
+
+.teacher-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 22px;
+  flex-wrap: wrap;
+}
+
+.teacher-controls-label {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.teacher-controls select { width: auto; min-width: 140px; }
+
+.heatmap-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+
+table.heatmap { border-collapse: collapse; width: 100%; font-family: var(--sans); font-size: 12.5px; }
+
+table.heatmap th, table.heatmap td { padding: 8px 10px; text-align: center; white-space: nowrap; }
+
+table.heatmap thead th {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1.5px solid var(--border-strong);
+  vertical-align: bottom;
+  max-width: 110px;
+  white-space: normal;
+}
+
+table.heatmap tbody th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--ink);
+  border-right: 1.5px solid var(--border-strong);
+  position: sticky;
+  left: 0;
+  background: var(--card);
+}
+
+table.heatmap tbody tr:nth-child(even) th,
+table.heatmap tbody tr:nth-child(even) td.heat-cell { background: rgba(0,0,0,0.015); }
+
+td.heat-cell {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: #fdfcf7;
+  min-width: 64px;
+}
+
+td.heat-cell .cell-inner {
+  display: inline-block;
+  width: 100%;
+  padding: 5px 0;
+  border-radius: 6px;
+}
+
+.heatmap-legend {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.heatmap-legend .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+#classBars .bar-row { margin-bottom: 16px; }
+#classBars .bar-label { width: 260px; }
+
+.risk-empty {
+  font-size: 13.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.risk-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--bad);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.risk-card-name { font-weight: 600; font-size: 13.5px; }
+.risk-card-detail { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.risk-card-pct { font-family: var(--serif); font-weight: 700; font-size: 18px; color: var(--bad); }
+
+@media (max-width: 640px) {
+  .teacher-controls { width: 100%; }
+  .teacher-controls select { flex: 1; }
+}

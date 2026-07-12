@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="Mentora teacher view — a class-wide mastery heatmap built on the same Bayesian Knowledge Tracing engine that powers individual lessons." />
+<title>Teacher view — Mentora</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><rect width=%2232%22 height=%2232%22 rx=%226%22 fill=%22%231b1a14%22/><path d=%22M14 6 L6 16 L14 26%22 stroke=%22%23f7f4ec%22 stroke-width=%222.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22 fill=%22none%22/><path d=%22M22 6 L14 16 L22 26%22 stroke=%22%233f5d3a%22 stroke-width=%222.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22 fill=%22none%22/></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;0,800;1,600&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="teacher.css" />
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <div class="brand">
+      <a href="index.html" style="display:flex;align-items:center;gap:12px;color:inherit;text-decoration:none;">
+        <div>
+          <h1>Mentora</h1>
+          <span class="tag">Adaptive tutor · Bayesian Knowledge Tracing</span>
+        </div>
+      </a>
+    </div>
+    <nav class="site-nav" aria-label="Mentora pages">
+      <a href="index.html">Lesson</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="teacher.html" class="active">Teacher view</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section>
+    <span class="eyebrow">Classroom · stretch goal</span>
+    <h2 class="section-title">One tutor, one class</h2>
+    <p class="section-desc">Every student runs their own MasteryModel — same BKT engine, same dependency graph. This view aggregates those per-student tracers into a single classroom picture, so a teacher can see who's stuck, where, and why, instead of relying on self-reported understanding one-on-one.</p>
+    <p class="sim-note">This is a simulated class of students working through Mentora's bundled photosynthesis demo lesson, generated locally in your browser to demonstrate how individual mastery models roll up to a class view — no student data is collected or transmitted.</p>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="section-block">
+    <div class="section-heading-row">
+      <div>
+        <span class="eyebrow">Class overview</span>
+        <h2 class="section-title">Mastery heatmap</h2>
+        <p class="section-desc">Rows are students, columns are concepts in dependency order. Darker green means higher mastery probability; red flags a concept a student hasn't cleared.</p>
+      </div>
+      <div class="teacher-controls">
+        <label for="classSizeSelect" class="teacher-controls-label">Class size</label>
+        <select id="classSizeSelect">
+          <option value="10">10 students</option>
+          <option value="18" selected>18 students</option>
+          <option value="28">28 students</option>
+        </select>
+        <button class="secondary-btn" id="regenBtn">Regenerate class</button>
+      </div>
+    </div>
+
+    <div class="heatmap-wrap">
+      <table class="heatmap" id="heatmapTable"></table>
+    </div>
+
+    <div class="heatmap-legend">
+      <span><i class="swatch" style="background:#a13c2f"></i> Below 40%</span>
+      <span><i class="swatch" style="background:#a9822e"></i> 40–84%</span>
+      <span><i class="swatch" style="background:#3f5d3a"></i> Mastered (≥85%)</span>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="section-block">
+    <span class="eyebrow">Class insight</span>
+    <h2 class="section-title">Where the class is stuck</h2>
+    <p class="section-desc">Average mastery per concept across the whole class — the same weakest-link logic that drives individual recommendations, applied at class scale.</p>
+    <div id="classBars"></div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="section-block">
+    <span class="eyebrow">Intervention list</span>
+    <h2 class="section-title">Students who need a check-in</h2>
+    <p class="section-desc">Students below mastery threshold on a concept whose prerequisites they've already cleared — i.e. actively stuck, not just early in the sequence.</p>
+    <div id="riskList"></div>
+  </section>
+</main>
+
+<footer>Built for the <span class="footer-highlight">Prometheus July AI Challenge</span> · Mentora</footer>
+
+<script src="bkt.js"></script>
+<script src="teacher.js"></script>
+</body>
+</html>
