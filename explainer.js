@@ -69,7 +69,7 @@ function render() {
   const pct = Math.round(tracer.mastery * 100);
   els.simPct.textContent = pct;
   const mastered = tracer.isMastered();
-  els.simStatus.textContent = mastered ? "Mastered (≥ 85%)" : "Not yet mastered";
+  els.simStatus.textContent = mastered ? "Mastered (≥ 90%)" : "Not yet mastered";
   els.simStatus.classList.toggle("mastered", mastered);
   renderSpark();
   renderHistory();
@@ -82,7 +82,7 @@ function renderSpark() {
   const x = (i) => (n === 1 ? w / 2 : pad + (i / (n - 1)) * (w - pad * 2));
   const y = (v) => h - pad - v * (h - pad * 2);
 
-  const thresholdY = y(0.85).toFixed(1);
+  const thresholdY = y(0.9).toFixed(1);
   let svg = `<line x1="0" y1="${thresholdY}" x2="${w}" y2="${thresholdY}" stroke="#a6a191" stroke-width="1" stroke-dasharray="4,4" />`;
 
   if (n === 1) {

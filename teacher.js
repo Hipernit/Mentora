@@ -21,8 +21,10 @@ const CONCEPTS = [
   { id: "c5", label: "Why plants appear green", dependsOn: ["c4"] },
 ];
 
-const BKT_PARAMS = { pInit: 0.25, pLearn: 0.3, pSlip: 0.1, pGuess: 0.22 };
-const THRESHOLD = 0.85;
+// Matches the tuning in app.js — see the comment there for why this is
+// harder than textbook BKT defaults.
+const BKT_PARAMS = { pInit: 0.2, pLearn: 0.22, pSlip: 0.08, pGuess: 0.25 };
+const THRESHOLD = 0.9;
 
 const FIRST_NAMES = [
   "Amara", "Beckett", "Carmen", "Devon", "Elif", "Farid", "Greta", "Hiro",
@@ -59,7 +61,10 @@ function simulateStudent() {
     const depsMet = (c.dependsOn || []).every((d) => model.tracers[d].isMastered(THRESHOLD));
     if (!depsMet) return; // student never reaches a locked concept, same as real UI
     let attempts = 0;
-    while (attempts < 3 && !model.tracers[c.id].isMastered(THRESHOLD)) {
+    // Matches app.js's MAX_ATTEMPTS_PER_CONCEPT — same per-concept attempt
+    // budget as a real lesson, so the simulated class reflects the same
+    // pass/fail dynamics a real student would see.
+    while (attempts < 5 && !model.tracers[c.id].isMastered(THRESHOLD)) {
       const correct = Math.random() < aptitude;
       model.recordAnswer(c.id, correct);
       attempts++;
@@ -82,7 +87,7 @@ function buildClass() {
 }
 
 function masteryColor(pct) {
-  if (pct >= 85) return "#3f5d3a";
+  if (pct >= 90) return "#3f5d3a";
   if (pct >= 40) return "#a9822e";
   return "#a13c2f";
 }

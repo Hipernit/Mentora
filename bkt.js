@@ -70,7 +70,7 @@ class ConceptTracer {
   }
 
   /** Has the student crossed the "mastered" threshold? */
-  isMastered(threshold = 0.85) {
+  isMastered(threshold = 0.9) {
     return this.mastery >= threshold;
   }
 
@@ -116,7 +116,7 @@ class MasteryModel {
    * weakest-link strategy, so we never recommend reviewing something the
    * student can't understand yet for lack of foundation.
    */
-  recommendNext(threshold = 0.85) {
+  recommendNext(threshold = 0.9) {
     const ready = this.concepts.filter((c) => {
       if (this.tracers[c.id].isMastered(threshold)) return false;
       const deps = c.dependsOn || [];

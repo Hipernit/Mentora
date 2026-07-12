@@ -369,7 +369,7 @@ button:active:not(:disabled) { transform: translateY(1px); }
 .bar-track::after {
   content: "";
   position: absolute;
-  left: 85%;
+  left: 90%;
   top: -3px;
   bottom: -3px;
   width: 1px;

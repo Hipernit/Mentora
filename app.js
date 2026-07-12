@@ -17,6 +17,17 @@
  * whole adaptive-learning loop is still fully demoable offline.
  */
 
+// Mastery bar: raised from the textbook-BKT-demo default of 0.85 so a
+// concept can't be "mastered" off one or two lucky answers. See the BKT
+// params on the MasteryModel construction in generateCourse() for the other
+// half of this tuning (slower pLearn, more skeptical pGuess/pSlip).
+const MASTERY_THRESHOLD = 0.9;
+// Quiz pool per concept is 3 questions (see generateQuiz), but questions
+// cycle via modulo once exhausted — raised from 3 so the harder threshold
+// is still reachable within a lesson instead of force-advancing a student
+// who hasn't actually crossed it yet.
+const MAX_ATTEMPTS_PER_CONCEPT = 5;
+
 const PROVIDERS = {
   gemini: {
     label: "Gemini",
@@ -278,7 +289,13 @@ async function generateCourse(demo) {
       }
     }
 
-    state.model = new MasteryModel(state.concepts, { pInit: 0.25, pLearn: 0.3, pSlip: 0.1, pGuess: 0.22 });
+    // Tuned harder than textbook BKT defaults: lower pInit/pLearn slow the
+    // climb toward mastery, lower pSlip means a wrong answer is taken more
+    // at face value (less "benefit of the doubt"), and higher pGuess makes
+    // a single correct answer weaker proof of real understanding. Combined
+    // with the raised MASTERY_THRESHOLD below, mastering a concept now
+    // reliably takes multiple consistent correct answers, not one or two.
+    state.model = new MasteryModel(state.concepts, { pInit: 0.2, pLearn: 0.22, pSlip: 0.08, pGuess: 0.25 });
     state.material = material;
 
     els.setupView.classList.add("hidden");
@@ -382,7 +399,7 @@ function updateHeaderProgress() {
   if (!state.model) return;
   const pct = Math.round(state.model.overallMastery() * 100);
   els.overallProgressFill.style.width = `${pct}%`;
-  els.overallProgressFill.style.background = pct >= 85 ? "#3f5d3a" : pct > 50 ? "#a9822e" : "#a13c2f";
+  els.overallProgressFill.style.background = pct >= 90 ? "#3f5d3a" : pct > 50 ? "#a9822e" : "#a13c2f";
   els.overallProgressPct.textContent = `${pct}`;
 }
 
@@ -431,7 +448,7 @@ function handleAnswer(chosenIdx, correctIdx) {
   nextBtn.style.marginTop = "12px";
   nextBtn.addEventListener("click", () => {
     state.currentQuestionIdx++;
-    if (state.model.getMastery(concept.id) >= 0.85 || state.currentQuestionIdx >= 3) {
+    if (state.model.getMastery(concept.id) >= MASTERY_THRESHOLD || state.currentQuestionIdx >= MAX_ATTEMPTS_PER_CONCEPT) {
       advanceToRecommended();
     } else {
       renderQuestion();
