@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mentora — Adaptive AI Learning Companion</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1>🧠 Mentora</h1>
+  <span class="tag">Adaptive AI tutor powered by Claude + Bayesian Knowledge Tracing</span>
+</header>
+
+<main>
+  <section id="setupView" class="card">
+    <div class="row" style="flex-direction:column; align-items:stretch;">
+      <label for="providerSelect">AI provider</label>
+      <div class="row">
+        <select id="providerSelect">
+          <option value="gemini">Google Gemini (free tier, no card, no expiration)</option>
+          <option value="claude">Anthropic Claude ($5 free credit on signup)</option>
+        </select>
+      </div>
+      <label for="apiKeyInput" id="apiKeyLabel">Gemini API key (stored only in your browser) — get one free at aistudio.google.com/apikey</label>
+      <div class="row">
+        <input type="password" id="apiKeyInput" placeholder="paste your API key" />
+        <button class="ghost-btn" id="saveKeyBtn">Save</button>
+      </div>
+    </div>
+
+    <label for="materialInput">Paste study material (notes, an article, a textbook section)</label>
+    <textarea id="materialInput" placeholder="Paste anything you're trying to learn..."></textarea>
+
+    <div class="row" style="margin-top:16px;">
+      <button class="primary-btn" id="generateBtn">Build my adaptive lesson</button>
+      <button class="secondary-btn" id="demoBtn">Try Demo (no API key needed)</button>
+    </div>
+    <div id="statusMsg"></div>
+  </section>
+
+  <section id="learnView" class="hidden">
+    <div class="card">
+      <h2 style="margin-top:0;">Concept map</h2>
+      <div class="concept-graph" id="conceptGraph"></div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Mastery dashboard <span style="font-weight:400;font-size:13px;color:#64748b;">(live, from the Bayesian Knowledge Tracing engine)</span></h2>
+      <div id="dashboard"></div>
+    </div>
+
+    <div class="card">
+      <div id="recommendation"></div>
+      <div id="quizPanel"></div>
+
+      <div id="analogyPanel" class="hidden">
+        <hr style="margin:18px 0;border:none;border-top:1px solid #e2e8f0;" />
+        <strong>Want it explained a different way?</strong>
+        <div class="analogy-choices" id="analogyChoices">
+          <button class="ghost-btn" data-domain="cooking">🍳 Cooking</button>
+          <button class="ghost-btn" data-domain="sports">🏅 Sports</button>
+          <button class="ghost-btn" data-domain="gaming">🎮 Gaming</button>
+          <button class="ghost-btn" data-domain="music">🎵 Music</button>
+        </div>
+        <div id="analogyResult"></div>
+      </div>
+    </div>
+
+    <button class="ghost-btn" id="restartBtn">Start over with new material</button>
+  </section>
+</main>
+
+<footer>Built for the Prometheus July AI Challenge — Mentora</footer>
+
+<script src="bkt.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
