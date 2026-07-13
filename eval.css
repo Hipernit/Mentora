@@ -1,0 +1,115 @@
+/* eval.css — styling specific to eval.html */
+
+.sim-note {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  border-left: 2.5px solid var(--border-strong);
+  padding-left: 12px;
+  max-width: 680px;
+  line-height: 1.6;
+}
+
+.eval-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.eval-controls-label { margin: 0; white-space: nowrap; }
+.eval-controls select { width: auto; min-width: 100px; }
+
+.eval-status {
+  min-height: 20px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--amber);
+  margin-top: 14px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.metric-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.metric-card.metric-highlight { border-color: var(--accent); background: var(--accent-soft); }
+
+.metric-num {
+  font-family: var(--serif);
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1;
+}
+.metric-num .metric-vs {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0 2px;
+}
+.metric-highlight .metric-num { color: var(--accent-dark); }
+
+.metric-label {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.chart-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.bar-chart { width: 100%; max-width: 420px; height: auto; }
+.chart-value { font-family: var(--mono); font-size: 12px; font-weight: 700; fill: var(--ink); }
+.chart-axis-label { font-family: var(--mono); font-size: 11.5px; fill: var(--muted); }
+
+.chart-legend {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.chart-legend .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.eval-footnote {
+  margin-top: 16px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.6;
+  max-width: 720px;
+}
+
+@media (max-width: 640px) {
+  .eval-controls { width: 100%; }
+  .eval-controls select { flex: 1; }
+}

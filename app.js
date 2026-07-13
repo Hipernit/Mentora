@@ -28,6 +28,16 @@ const MASTERY_THRESHOLD = 0.9;
 // who hasn't actually crossed it yet.
 const MAX_ATTEMPTS_PER_CONCEPT = 5;
 
+// Starting BKT parameters, used until the fitter has enough of THIS student's
+// answers to learn better ones (see learnAndApply). One source of truth so the
+// live model and the "default vs learned" readout never drift apart.
+const DEFAULT_BKT = { pInit: 0.2, pLearn: 0.22, pSlip: 0.08, pGuess: 0.25 };
+
+// localStorage key for full-session persistence (Feature 3) — lets a student
+// close the tab mid-lesson and resume exactly where they left off, including
+// mastery history, learned BKT params, and the spaced-repetition schedule.
+const SAVE_KEY = "mentora_session_v1";
+
 const PROVIDERS = {
   gemini: {
     label: "Gemini",
@@ -58,6 +68,22 @@ document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
   els.providerSelect.value = state.provider;
   syncProviderUI();
+
+  if (els.resumeSessionBtn && localStorage.getItem(SAVE_KEY)) {
+    els.resumeSessionBtn.classList.remove("hidden");
+    els.resumeSessionBtn.addEventListener("click", () => {
+      if (!loadSession()) return;
+      els.setupView.classList.add("hidden");
+      els.learnView.classList.remove("hidden");
+      els.headerProgress.classList.remove("hidden");
+      renderGraph();
+      renderDashboard();
+      renderCalibration();
+      updateSchedule();
+      renderReviewPanel();
+      advanceToRecommended();
+    });
+  }
 });
 
 function cacheEls() {
@@ -65,7 +91,8 @@ function cacheEls() {
     "providerSelect", "apiKeyLabel", "apiKeyInput", "saveKeyBtn", "keyHint", "materialInput", "generateBtn", "statusMsg",
     "setupView", "learnView", "conceptGraph", "quizPanel", "dashboard",
     "recommendation", "analogyPanel", "analogyChoices", "analogyResult",
-    "demoBtn",
+    "paramReadout", "calibrationPanel", "reviewPanel",
+    "demoBtn", "resumeSessionBtn",
     "headerProgress", "overallProgressFill", "overallProgressPct",
     "loadingOverlay", "loadingText",
   ].forEach((id) => (els[id] = document.getElementById(id)));
@@ -221,6 +248,21 @@ ${material}
   return callLLM(prompt, 400);
 }
 
+/**
+ * Misconception diagnosis: the highest-value use of the LLM here. Rather than
+ * just "you got concept X wrong", it reads the student's specific wrong choice
+ * and names the underlying misunderstanding it reveals — the thing a plain
+ * quiz-score system can never do.
+ */
+async function diagnoseMisconception(concept, q, chosenText, correctText) {
+  const prompt = `A student studying "${concept.label}" answered a multiple-choice question incorrectly.
+Question: ${q.q}
+The student chose: "${chosenText}"
+The correct answer: "${correctText}"
+In ONE short sentence addressed to the student as "You", name the SPECIFIC misconception their wrong choice reveals — the underlying thing they misunderstand — not a restatement of the correct answer. Start with "You're likely" or "You may be".`;
+  return callLLM(prompt, 120);
+}
+
 /* ------------------------------- Demo data -------------------------------- */
 
 const DEMO_MATERIAL = `Photosynthesis is the process by which plants convert light energy into chemical energy. It occurs in two stages: the light-dependent reactions, which take place in the thylakoid membrane and produce ATP and NADPH while splitting water and releasing oxygen, and the light-independent reactions (Calvin cycle), which occur in the stroma and use ATP and NADPH to fix carbon dioxide into glucose. Chlorophyll, the main pigment involved, absorbs mostly red and blue light and reflects green light, which is why plants appear green.`;
@@ -264,6 +306,7 @@ const DEMO_QUIZZES = {
 /* -------------------------------- Main flow -------------------------------- */
 
 async function generateCourse(demo) {
+  clearSession(); // starting fresh material should not leave a stale resume point
   state.demoMode = demo;
   const material = demo ? DEMO_MATERIAL : els.materialInput.value.trim();
   if (!material) return setStatus("Paste some study material first.", true);
@@ -295,8 +338,14 @@ async function generateCourse(demo) {
     // a single correct answer weaker proof of real understanding. Combined
     // with the raised MASTERY_THRESHOLD below, mastering a concept now
     // reliably takes multiple consistent correct answers, not one or two.
-    state.model = new MasteryModel(state.concepts, { pInit: 0.2, pLearn: 0.22, pSlip: 0.08, pGuess: 0.25 });
+    state.model = new MasteryModel(state.concepts, DEFAULT_BKT);
     state.material = material;
+    state.calibration = []; // {predicted, correct} per answer, for the calibration check
+    state.schedule = {};    // conceptId -> {lastReviewed, reviewCount} for spaced repetition
+    state.clockOffset = 0;  // demo "simulate time" offset in ms
+    state.reviewMode = false;
+    state.reviewQueue = [];
+    state.currentConfidence = true; // reset by renderQuestion() before each question anyway
 
     els.setupView.classList.add("hidden");
     els.learnView.classList.remove("hidden");
@@ -316,23 +365,48 @@ async function generateCourse(demo) {
 }
 
 function advanceToRecommended() {
-  const next = state.model.recommendNext();
+  // Re-fit BKT parameters from everything answered so far, then rebuild and
+  // replay. Done here (at concept boundaries) rather than after every answer,
+  // so within-concept mastery stays intuitive and only re-calibrates between
+  // concepts. On first call there's no history yet, so it stays on defaults.
+  learnAndApply();
+  updateSchedule();
+  renderReviewPanel();
+  // Use the same threshold everywhere (matches the 90% line on the dashboard),
+  // so "recommend next" and "mastered" never disagree.
+  const next = state.model.recommendNext(MASTERY_THRESHOLD);
   els.analogyPanel.classList.add("hidden");
   if (!next) {
     const overallPct = Math.round(state.model.overallMastery() * 100);
     const count = state.concepts.length;
+    const masteredCount = state.concepts.filter((c) =>
+      state.model.tracers[c.id].isMastered(MASTERY_THRESHOLD)
+    ).length;
+    const allMastered = masteredCount === count;
+    const heading = allMastered
+      ? `All ${count} concept${count === 1 ? "" : "s"} mastered.`
+      : `${masteredCount} of ${count} concept${count === 1 ? "" : "s"} mastered.`;
+    const sub = allMastered
+      ? `Overall retention holding at ${overallPct}% across the full prerequisite graph.`
+      : `You've reached the end of the reachable material — overall retention ${overallPct}%. The remaining concepts didn't cross the ${Math.round(MASTERY_THRESHOLD * 100)}% mastery line. Start over to keep working them.`;
     els.quizPanel.innerHTML = `
       <div class="completion-banner">
-        <span class="completion-pill">Course complete</span>
+        <span class="completion-pill">${allMastered ? "Course complete" : "End of lesson"}</span>
         <div class="completion-text">
-          <h3>All ${count} concept${count === 1 ? "" : "s"} mastered.</h3>
-          <p>Overall retention holding at ${overallPct}% across the full prerequisite graph.</p>
+          <h3>${heading}</h3>
+          <p>${sub}</p>
         </div>
         <button class="completion-btn" id="completionRestartBtn">Start over with new material &rarr;</button>
       </div>`;
     els.recommendation.textContent = "";
-    document.getElementById("completionRestartBtn")?.addEventListener("click", () => location.reload());
+    document.getElementById("completionRestartBtn")?.addEventListener("click", () => {
+      clearSession();
+      location.reload();
+    });
+    renderDashboard();
     renderGraph();
+    renderCalibration();
+    saveSession();
     return;
   }
   state.currentConcept = next;
@@ -340,6 +414,7 @@ function advanceToRecommended() {
   els.recommendation.textContent = `Next up · ${next.label} · current mastery ${(state.model.getMastery(next.id) * 100).toFixed(0)}%`;
   renderGraph();
   renderQuestion();
+  saveSession();
 }
 
 /** Builds a stable "C01" style display code for a concept from its position in the graph. */
@@ -351,8 +426,8 @@ function renderGraph() {
   els.conceptGraph.innerHTML = state.concepts
     .map((c, i) => {
       const mastery = state.model ? state.model.getMastery(c.id) : c.dependsOn.length ? 0 : 0.25;
-      const mastered = state.model ? state.model.tracers[c.id].isMastered() : false;
-      const depsMet = c.dependsOn.every((d) => state.model && state.model.tracers[d]?.isMastered());
+      const mastered = state.model ? state.model.tracers[c.id].isMastered(MASTERY_THRESHOLD) : false;
+      const depsMet = c.dependsOn.every((d) => state.model && state.model.tracers[d]?.isMastered(MASTERY_THRESHOLD));
       const locked = !mastered && c.dependsOn.length > 0 && !depsMet;
       const isCurrent = state.currentConcept?.id === c.id;
       const stateClass = mastered ? "mastered" : locked ? "locked" : isCurrent ? "in-progress current" : "in-progress";
@@ -403,17 +478,396 @@ function updateHeaderProgress() {
   els.overallProgressPct.textContent = `${pct}`;
 }
 
+/**
+ * Re-fit the BKT parameters to this student's actual answers, then rebuild the
+ * mastery model with the learned parameters and replay every answer through it.
+ * Falls back silently to the current model if bktFit.js isn't loaded or there
+ * aren't enough answers yet to fit responsibly.
+ */
+function learnAndApply() {
+  if (typeof fitModel !== "function") return; // bktFit.js not present
+  // Regularize toward our starting defaults so a short lesson's worth of
+  // answers nudges the parameters rather than swinging them to extremes.
+  const result = fitModel(state.model, { minObservations: 6, prior: DEFAULT_BKT });
+  state.lastFit = result;
+  if (result.fitted) {
+    const rebuilt = new MasteryModel(state.concepts, result.params);
+    state.concepts.forEach((c) => {
+      state.model.tracers[c.id].history.forEach((h) => rebuilt.recordAnswer(c.id, h.correct));
+    });
+    state.model = rebuilt;
+  }
+  renderParams(result);
+}
+
+/** Shows default vs learned parameters so "it actually learns" is visible on screen. */
+function renderParams(result) {
+  if (!els.paramReadout) return;
+  els.paramReadout.classList.remove("hidden");
+  const fmt = (p) => `init ${p.pInit.toFixed(2)} · learn ${p.pLearn.toFixed(2)} · slip ${p.pSlip.toFixed(2)} · guess ${p.pGuess.toFixed(2)}`;
+  if (!result.fitted) {
+    els.paramReadout.innerHTML =
+      `<div class="param-tag">model parameters</div>` +
+      `<div class="param-line">Defaults — ${fmt(DEFAULT_BKT)}</div>` +
+      `<div class="param-note">Learning from your answers… (${result.observations}/6 needed to fit)</div>`;
+    return;
+  }
+  els.paramReadout.innerHTML =
+    `<div class="param-tag param-tag-learned">model parameters · learned</div>` +
+    `<div class="param-line">Learned — ${fmt(result.params)}</div>` +
+    `<div class="param-note">Fit from ${result.observations} of your answers by maximum likelihood (was: ${fmt(DEFAULT_BKT)})</div>`;
+}
+
+/**
+ * Calibration check: does the model's stated confidence match reality? Before
+ * each answer we logged P(correct) implied by the mastery estimate; here we
+ * compare those predictions against what actually happened. A well-calibrated
+ * model that says "80%" should be right ~80% of the time. Reported as a Brier
+ * score (mean squared error of the probabilities; 0 is perfect) plus a
+ * predicted-vs-actual breakdown by confidence band. This is the evidence that
+ * the mastery numbers are honest, not decorative.
+ */
+/**
+ * Groups the raw calibration log into fixed-width predicted-probability buckets
+ * (default 10, i.e. 0-10%, 10-20%, ... 90-100%) and reduces each non-empty
+ * bucket to a single {avgPred, actual, n} point — the data a reliability
+ * diagram plots. Pulled out as its own function so it's testable independent
+ * of any DOM/SVG rendering.
+ */
+function buildReliabilityBins(log, numBins = 10) {
+  const bins = Array.from({ length: numBins }, (_, i) => ({ lo: i / numBins, hi: (i + 1) / numBins, items: [] }));
+  log.forEach((e) => {
+    let idx = Math.floor(e.predicted * numBins);
+    if (idx >= numBins) idx = numBins - 1;
+    if (idx < 0) idx = 0;
+    bins[idx].items.push(e);
+  });
+  return bins
+    .filter((b) => b.items.length)
+    .map((b) => ({
+      avgPred: b.items.reduce((s, e) => s + e.predicted, 0) / b.items.length,
+      actual: b.items.filter((e) => e.correct).length / b.items.length,
+      n: b.items.length,
+    }));
+}
+
+/** Green/amber/red by how far a point strays from the perfect-calibration diagonal. */
+function reliabilityColor(avgPred, actual) {
+  const gap = Math.abs(avgPred - actual);
+  if (gap < 0.1) return "#3f5d3a";
+  if (gap < 0.25) return "#a9822e";
+  return "#a13c2f";
+}
+
+/**
+ * Renders a small inline SVG reliability diagram: predicted confidence (x) vs
+ * observed correctness rate (y) per bucket, with a dashed diagonal marking
+ * perfect calibration (a point sitting exactly on the line means "when the
+ * model said N%, you were right N% of the time"). Point radius scales with
+ * how many answers landed in that bucket, so sparse buckets read as less
+ * conclusive at a glance.
+ */
+function reliabilitySvg(points) {
+  const padL = 34, padB = 22, padT = 12, padR = 12;
+  const w = 260, h = 200;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const x0 = padL, y0 = h - padB;
+  const toX = (p) => x0 + p * plotW;
+  const toY = (a) => y0 - a * plotH;
+
+  const ticks = [0, 0.5, 1];
+  const xTicks = ticks
+    .map(
+      (t) => `<line x1="${toX(t)}" y1="${y0}" x2="${toX(t)}" y2="${y0 + 4}" stroke="#8a8578" stroke-width="1"/>
+      <text x="${toX(t)}" y="${y0 + 15}" font-size="8.5" text-anchor="middle" fill="#8a8578">${Math.round(t * 100)}</text>`
+    )
+    .join("");
+  const yTicks = ticks
+    .map(
+      (t) => `<line x1="${x0 - 4}" y1="${toY(t)}" x2="${x0}" y2="${toY(t)}" stroke="#8a8578" stroke-width="1"/>
+      <text x="${x0 - 8}" y="${(toY(t) + 3).toFixed(1)}" font-size="8.5" text-anchor="end" fill="#8a8578">${Math.round(t * 100)}</text>`
+    )
+    .join("");
+
+  const dots = points
+    .map((p) => {
+      const r = Math.max(3, Math.min(10, 3 + Math.sqrt(p.n) * 1.5));
+      const color = reliabilityColor(p.avgPred, p.actual);
+      return `<circle cx="${toX(p.avgPred).toFixed(1)}" cy="${toY(p.actual).toFixed(1)}" r="${r.toFixed(1)}" fill="${color}" fill-opacity="0.85" stroke="${color}" stroke-width="1"/>`;
+    })
+    .join("");
+
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="190" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Reliability diagram: predicted confidence versus actual correctness">
+    <line x1="${x0}" y1="${y0}" x2="${x0}" y2="${padT}" stroke="#8a8578" stroke-width="1"/>
+    <line x1="${x0}" y1="${y0}" x2="${w - padR}" y2="${y0}" stroke="#8a8578" stroke-width="1"/>
+    <line x1="${toX(0)}" y1="${toY(0)}" x2="${toX(1)}" y2="${toY(1)}" stroke="#8a8578" stroke-width="1" stroke-dasharray="3,3"/>
+    ${xTicks}
+    ${yTicks}
+    <text x="${(x0 + plotW / 2).toFixed(1)}" y="${h - 2}" font-size="9" text-anchor="middle" fill="#8a8578">predicted %</text>
+    <text x="10" y="${(padT + plotH / 2).toFixed(1)}" font-size="9" text-anchor="middle" fill="#8a8578" transform="rotate(-90 10 ${(padT + plotH / 2).toFixed(1)})">actual %</text>
+    ${dots}
+  </svg>`;
+}
+
+function renderCalibration() {
+  if (!els.calibrationPanel) return;
+  const log = state.calibration || [];
+  if (log.length < 5) {
+    els.calibrationPanel.classList.add("hidden");
+    return;
+  }
+  els.calibrationPanel.classList.remove("hidden");
+
+  const brier = log.reduce((s, e) => s + (e.predicted - (e.correct ? 1 : 0)) ** 2, 0) / log.length;
+  const points = buildReliabilityBins(log);
+
+  els.calibrationPanel.innerHTML =
+    `<div class="calib-tag">calibration · is the model's confidence honest?</div>` +
+    `<div class="calib-brier">Brier score ${brier.toFixed(3)} <span class="calib-note">(0 = perfect, lower is better)</span></div>` +
+    `<div class="calib-chart">${reliabilitySvg(points)}</div>` +
+    `<div class="calib-note">Each point groups answers by the model's pre-answer confidence (x-axis) against how often you were actually right (y-axis), across ${log.length} answers. Dashed line = perfect calibration; dot size = sample count in that bucket.</div>`;
+}
+
+/* --------------------------- Spaced repetition ----------------------------- */
+
+/** Wall-clock time adjusted by the demo "simulate time" offset. */
+function now() {
+  return Date.now() + (state.clockOffset || 0);
+}
+
+/** Human-readable duration: "Nd" / "Nh" / "Nm" (minimum 1m). */
+function formatDuration(ms) {
+  const abs = Math.abs(ms);
+  const DAY = 24 * 60 * 60 * 1000;
+  const HOUR = 60 * 60 * 1000;
+  const MINUTE = 60 * 1000;
+  if (abs >= DAY) return `${Math.round(abs / DAY)}d`;
+  if (abs >= HOUR) return `${Math.round(abs / HOUR)}h`;
+  return `${Math.max(1, Math.round(abs / MINUTE))}m`;
+}
+
+/**
+ * Enrolls newly-mastered concepts into the spaced-repetition schedule. Never
+ * overwrites an existing schedule entry — reviewCount progression from
+ * recordReviewResult is the only thing allowed to change it after that.
+ */
+function updateSchedule() {
+  if (typeof Spaced === "undefined") return;
+  state.concepts.forEach((c) => {
+    const tracer = state.model?.tracers[c.id];
+    if (tracer && tracer.isMastered(MASTERY_THRESHOLD) && !state.schedule[c.id]) {
+      state.schedule[c.id] = { lastReviewed: now(), reviewCount: 1 };
+    }
+  });
+}
+
+/** Concepts currently on the schedule whose estimated retention has fallen due. */
+function dueConcepts() {
+  if (typeof Spaced === "undefined") return [];
+  return state.concepts.filter((c) => {
+    const s = state.schedule[c.id];
+    return s && Spaced.isDue(now(), s.lastReviewed, s.reviewCount);
+  });
+}
+
+/** Renders the spaced-repetition panel: per-concept retention/status plus time-travel controls. */
+function renderReviewPanel() {
+  if (!els.reviewPanel) return;
+  if (typeof Spaced === "undefined") {
+    els.reviewPanel.classList.add("hidden");
+    return;
+  }
+  const scheduledIds = Object.keys(state.schedule || {});
+  if (!scheduledIds.length) {
+    els.reviewPanel.classList.add("hidden");
+    return;
+  }
+  els.reviewPanel.classList.remove("hidden");
+
+  const rows = scheduledIds
+    .map((id) => {
+      const c = state.concepts.find((x) => x.id === id);
+      if (!c) return "";
+      const s = state.schedule[id];
+      const retPct = Math.round(Spaced.retention(now() - s.lastReviewed, s.reviewCount) * 100);
+      const due = Spaced.isDue(now(), s.lastReviewed, s.reviewCount);
+      const statusText = due
+        ? "due now"
+        : `next review in ${formatDuration(Spaced.nextDueMs(s.lastReviewed, s.reviewCount) - now())}`;
+      return `<div class="review-row">
+        <span class="review-name">${c.label}</span>
+        <span class="review-ret">retention ~${retPct}%</span>
+        <span class="review-status${due ? " review-due" : ""}">${statusText}</span>
+      </div>`;
+    })
+    .join("");
+
+  const dueCount = dueConcepts().length;
+
+  els.reviewPanel.innerHTML =
+    `<div class="review-tag">spaced review</div>` +
+    rows +
+    `<div class="review-controls">
+      <button class="ghost-btn" id="simDayBtn">Simulate +1 day</button>
+      <button class="ghost-btn" id="simWeekBtn">Simulate +1 week</button>
+      ${dueCount ? `<button class="primary-btn" id="reviewDueBtn">Review due (${dueCount})</button>` : ""}
+    </div>`;
+
+  document.getElementById("simDayBtn")?.addEventListener("click", () => simulateTime(24 * 60 * 60 * 1000));
+  document.getElementById("simWeekBtn")?.addEventListener("click", () => simulateTime(7 * 24 * 60 * 60 * 1000));
+  document.getElementById("reviewDueBtn")?.addEventListener("click", () => startReviewSession());
+}
+
+/** Fast-forwards the demo clock so retention decay / due dates are visible without waiting. */
+function simulateTime(ms) {
+  state.clockOffset = (state.clockOffset || 0) + ms;
+  renderReviewPanel();
+}
+
+/** Enters spaced-review mode: queues every due concept, one question each. */
+function startReviewSession() {
+  const due = dueConcepts();
+  if (!due.length) return;
+  state.reviewMode = true;
+  state.reviewQueue = due.slice();
+  els.recommendation.textContent = `Spaced review · ${due.length} concept${due.length === 1 ? "" : "s"} due for review`;
+  nextReviewItem();
+}
+
+/** Pulls the next due concept off the review queue, or exits review mode when empty. */
+function nextReviewItem() {
+  if (!state.reviewQueue.length) {
+    state.reviewMode = false;
+    els.quizPanel.innerHTML = "";
+    renderReviewPanel();
+    advanceToRecommended();
+    return;
+  }
+  state.currentConcept = state.reviewQueue.shift();
+  state.currentQuestionIdx = 0;
+  renderQuestion();
+}
+
+/**
+ * Records the outcome of a spaced-review question: success expands the review
+ * interval (reviewCount++), failure resets it to the shortest interval. This is
+ * the ONLY place schedule entries change after their initial creation.
+ */
+function recordReviewResult(concept, correct) {
+  const s = state.schedule[concept.id] || { reviewCount: 0 };
+  s.lastReviewed = now();
+  s.reviewCount = correct ? (s.reviewCount || 0) + 1 : 1;
+  state.schedule[concept.id] = s;
+  saveSession();
+}
+
+/* --------------------------- Session persistence ---------------------------- */
+
+/**
+ * Serializes the whole lesson (concepts, quizzes, material, calibration log,
+ * spaced-repetition schedule, clock offset, and per-concept BKT answer
+ * histories) to localStorage so a student can close the tab mid-lesson and
+ * resume exactly where they left off. Only the raw `correct` booleans are
+ * saved per concept — masteryBefore/masteryAfter are recomputed on replay
+ * (see loadSession), since ConceptTracer.observe() is deterministic.
+ */
+function saveSession() {
+  if (!state.model) return;
+  const params = state.lastFit?.params || DEFAULT_BKT;
+  const histories = {};
+  state.concepts.forEach((c) => {
+    histories[c.id] = (state.model.tracers[c.id]?.history || []).map((h) => h.correct);
+  });
+  const payload = {
+    concepts: state.concepts,
+    quizzes: state.quizzes,
+    material: state.material,
+    demoMode: state.demoMode,
+    calibration: state.calibration,
+    schedule: state.schedule,
+    clockOffset: state.clockOffset,
+    params,
+    histories,
+  };
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
+  } catch (err) {
+    console.error("saveSession failed", err);
+  }
+}
+
+/**
+ * Rebuilds state from a saved session: reconstructs the MasteryModel with the
+ * saved (learned) BKT params, then replays each concept's saved answer
+ * history through recordAnswer so mastery, history, and everything derived
+ * from it end up bit-for-bit identical to where the student left off.
+ * Returns false (and leaves state untouched) if there's no valid save.
+ */
+function loadSession() {
+  const raw = localStorage.getItem(SAVE_KEY);
+  if (!raw) return false;
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (err) {
+    console.error("loadSession: corrupt saved session", err);
+    return false;
+  }
+  if (!data || !Array.isArray(data.concepts) || !data.concepts.length) return false;
+
+  state.concepts = data.concepts;
+  state.quizzes = data.quizzes || {};
+  state.material = data.material || "";
+  state.demoMode = !!data.demoMode;
+  state.calibration = data.calibration || [];
+  state.schedule = data.schedule || {};
+  state.clockOffset = data.clockOffset || 0;
+  state.reviewMode = false;
+  state.reviewQueue = [];
+
+  const params = data.params || DEFAULT_BKT;
+  state.model = new MasteryModel(state.concepts, params);
+  state.concepts.forEach((c) => {
+    (data.histories?.[c.id] || []).forEach((correct) => state.model.recordAnswer(c.id, correct));
+  });
+  // Let advanceToRecommended's learnAndApply() re-derive lastFit/paramReadout
+  // from the replayed history rather than guessing at a stale observation count.
+
+  return true;
+}
+
+/** Clears the saved session (fresh material, or explicit "start over"). */
+function clearSession() {
+  localStorage.removeItem(SAVE_KEY);
+}
+
 function renderQuestion() {
   const concept = state.currentConcept;
   const quiz = state.quizzes[concept.id];
   const q = quiz[state.currentQuestionIdx % quiz.length];
+  state.currentQuestion = q; // remembered so handleAnswer can diagnose the wrong choice
+  state.currentConfidence = true; // each new question starts on "Confident" by default
   els.quizPanel.innerHTML = `
     <h3>${concept.label}</h3>
     <p class="question">${q.q}</p>
+    <div class="confidence-toggle" role="group" aria-label="How confident are you?">
+      <span class="confidence-label">How sure are you?</span>
+      <button type="button" class="confidence-btn active" data-confident="true">Confident</button>
+      <button type="button" class="confidence-btn" data-confident="false">Not sure</button>
+    </div>
     <div class="choices">
       ${q.choices.map((c, i) => `<button class="choice-btn" data-i="${i}">${c}</button>`).join("")}
     </div>
   `;
+  els.quizPanel.querySelectorAll(".confidence-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.currentConfidence = btn.dataset.confident === "true";
+      els.quizPanel.querySelectorAll(".confidence-btn").forEach((b) => {
+        b.classList.toggle("active", b.dataset.confident === btn.dataset.confident);
+      });
+    });
+  });
   els.quizPanel.querySelectorAll(".choice-btn").forEach((btn) => {
     btn.addEventListener("click", () => handleAnswer(parseInt(btn.dataset.i, 10), q.answerIndex));
   });
@@ -422,9 +876,25 @@ function renderQuestion() {
 function handleAnswer(chosenIdx, correctIdx) {
   const correct = chosenIdx === correctIdx;
   const concept = state.currentConcept;
-  const newMastery = state.model.recordAnswer(concept.id, correct);
+  // Whichever confidence toggle the student left active when they clicked an
+  // answer choice — "Confident" by default (see renderQuestion). Feeds into
+  // the BKT update so a sure-but-wrong answer and an unsure-but-wrong answer
+  // move mastery differently; see the rationale on ConceptTracer.observe().
+  const confident = state.currentConfidence !== false;
+  // Log the model's prediction BEFORE it sees the answer: P(correct) implied by
+  // the current mastery and parameters. Comparing these against actual outcomes
+  // is the calibration check — it's how we prove the mastery numbers are honest.
+  const tracer = state.model.tracers[concept.id];
+  const predicted = tracer.mastery * (1 - tracer.pSlip) + (1 - tracer.mastery) * tracer.pGuess;
+  (state.calibration ||= []).push({ predicted, correct, confident });
+  // Record with the CURRENT (fixed) parameters so mastery moves intuitively
+  // within a concept — a wrong answer always visibly lowers it. Parameter
+  // learning happens at concept boundaries instead (see advanceToRecommended),
+  // so a mid-concept refit can never push mastery up on a wrong answer.
+  const newMastery = state.model.recordAnswer(concept.id, correct, confident);
   renderDashboard();
   renderGraph();
+  renderCalibration();
 
   const buttons = els.quizPanel.querySelectorAll(".choice-btn");
   buttons.forEach((b, i) => {
@@ -432,21 +902,34 @@ function handleAnswer(chosenIdx, correctIdx) {
     if (i === correctIdx) b.classList.add("correct");
     else if (i === chosenIdx) b.classList.add("incorrect");
   });
+  els.quizPanel.querySelectorAll(".confidence-btn").forEach((b) => (b.disabled = true));
 
   const feedback = document.createElement("div");
   feedback.className = `feedback ${correct ? "feedback-correct" : "feedback-incorrect"}`;
-  feedback.innerHTML = correct
-    ? `Correct. Mastery of "${concept.label}" is now ${(newMastery * 100).toFixed(0)}%.`
-    : `Not quite. Mastery of "${concept.label}" is now ${(newMastery * 100).toFixed(0)}%.`;
+  feedback.innerHTML =
+    (correct
+      ? `Correct. Mastery of "${concept.label}" is now ${(newMastery * 100).toFixed(0)}%.`
+      : `Not quite. Mastery of "${concept.label}" is now ${(newMastery * 100).toFixed(0)}%.`) +
+    ` <span class="confidence-echo">(marked ${confident ? "confident" : "not sure"})</span>`;
   els.quizPanel.appendChild(feedback);
 
-  if (!correct) offerAnalogyReview(concept);
+  if (!correct) {
+    diagnoseAndShowMisconception(concept, state.currentQuestion, chosenIdx, correctIdx);
+    offerAnalogyReview(concept);
+  }
 
   const nextBtn = document.createElement("button");
   nextBtn.className = "primary-btn";
   nextBtn.textContent = "Continue";
   nextBtn.style.marginTop = "12px";
   nextBtn.addEventListener("click", () => {
+    if (state.reviewMode) {
+      // Spaced-review mode: one question per due concept, then update its schedule.
+      recordReviewResult(concept, correct);
+      renderReviewPanel();
+      nextReviewItem();
+      return;
+    }
     state.currentQuestionIdx++;
     if (state.model.getMastery(concept.id) >= MASTERY_THRESHOLD || state.currentQuestionIdx >= MAX_ATTEMPTS_PER_CONCEPT) {
       advanceToRecommended();
@@ -455,6 +938,39 @@ function handleAnswer(chosenIdx, correctIdx) {
     }
   });
   els.quizPanel.appendChild(nextBtn);
+  saveSession();
+}
+
+/** Shows the specific misconception behind a wrong answer (LLM live, or a bank in demo mode). */
+function diagnoseAndShowMisconception(concept, q, chosenIdx, correctIdx) {
+  if (!q) return;
+  const chosenText = q.choices[chosenIdx];
+  const correctText = q.choices[correctIdx];
+  const el = document.createElement("div");
+  el.className = "misconception";
+  el.innerHTML =
+    `<span class="misconception-tag">Likely misconception</span>` +
+    `<span class="misconception-text">Pinpointing what tripped you up…</span>`;
+  els.quizPanel.appendChild(el);
+  const textEl = el.querySelector(".misconception-text");
+  if (state.demoMode) {
+    textEl.textContent = demoMisconception(concept, chosenIdx, correctIdx);
+    return;
+  }
+  diagnoseMisconception(concept, q, chosenText, correctText)
+    .then((t) => (textEl.textContent = (t || "").trim() || "Look again at what this concept specifically does."))
+    .catch(() => el.remove());
+}
+
+function demoMisconception(concept, chosenIdx, correctIdx) {
+  const byConcept = {
+    c1: "You're likely conflating what photosynthesis produces with what it consumes — it stores energy in glucose, rather than only making oxygen or breaking sugar down.",
+    c2: "You may be mixing up where the light-dependent reactions happen and what they output — they run in the thylakoid membrane and yield ATP/NADPH, not glucose.",
+    c3: "You're likely confusing the Calvin cycle's inputs with the light reactions — it consumes ATP and NADPH in the stroma rather than using sunlight directly.",
+    c4: "You may be mis-associating chlorophyll's role — it absorbs red and blue light to power the reactions, rather than absorbing the green it reflects.",
+    c5: "You're likely inverting absorption and reflection — plants look green because chlorophyll reflects green light, not because it absorbs it.",
+  };
+  return byConcept[concept.id] || "You're likely mixing this concept up with a closely related one — look again at what it specifically does.";
 }
 
 function offerAnalogyReview(concept) {

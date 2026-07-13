@@ -389,6 +389,24 @@ button:active:not(:disabled) { transform: translateY(1px); }
 }
 
 .question { font-family: var(--serif); font-size: 19px; font-weight: 700; margin: 4px 0 18px; line-height: 1.4; }
+
+.confidence-toggle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 16px; }
+.confidence-label { font-family: var(--mono); font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.confidence-btn {
+  background: #fff;
+  border: 1.5px solid var(--border-strong);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: var(--sans);
+}
+.confidence-btn:hover:not(:disabled) { border-color: var(--accent); }
+.confidence-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+.confidence-btn:disabled { cursor: default; opacity: 0.6; }
+.confidence-echo { font-weight: 400; opacity: 0.75; font-size: 0.92em; }
+
 .choices { display: flex; flex-direction: column; gap: 9px; }
 .choice-btn {
   text-align: left;
@@ -529,16 +547,37 @@ footer {
 
 @media (max-width: 640px) {
   header { padding: 20px 20px; }
-  .header-inner { flex-direction: column; }
-  .header-progress { text-align: left; }
-  .header-progress-row { justify-content: flex-start; }
-  .header-bar-track { margin-left: 0; width: 100%; }
-  .site-nav { justify-content: flex-start; }
-  main { padding: 8px 18px 70px; }
-  .setup-card { padding: 20px; }
-  .bar-label { width: 130px; font-size: 12.5px; }
-  .action-row { flex-direction: column; }
-  .action-row button { width: 100%; }
-  .completion-banner { padding: 22px; }
-  .concept-graph { grid-template-columns: 1fr; }
 }
+
+/* Learned-vs-default BKT parameter readout (wired in with bktFit.js) */
+.param-readout { margin-top: 14px; padding: 12px 14px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; font-family: "JetBrains Mono", monospace; font-size: 0.8rem; }
+.param-tag { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.65rem; color: #a9822e; font-weight: 600; }
+.param-tag-learned { color: #3f5d3a; }
+.param-line { font-weight: 600; }
+.param-note { opacity: 0.7; font-size: 0.72rem; }
+
+/* Calibration check panel (predicted vs actual, wired in with the calibration log) */
+.calibration-panel { margin-top: 12px; padding: 12px 14px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; font-family: "JetBrains Mono", monospace; font-size: 0.8rem; }
+.calib-tag { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.65rem; color: #3f5d3a; font-weight: 600; margin-bottom: 6px; }
+.calib-brier { font-weight: 600; margin-bottom: 6px; }
+.calib-row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+.calib-band { opacity: 0.85; }
+.calib-nums { opacity: 0.85; }
+.calib-note { opacity: 0.6; font-size: 0.72rem; margin-top: 6px; }
+.calib-chart { margin: 8px 0 6px; max-width: 280px; }
+.calib-chart svg text { font-family: "JetBrains Mono", monospace; }
+
+/* Misconception diagnosis line (shown under a wrong answer) */
+.misconception { margin-top: 12px; padding: 10px 14px; border-left: 3px solid #a9822e; background: rgba(169,130,46,0.08); border-radius: 4px; display: flex; flex-direction: column; gap: 4px; }
+.misconception-tag { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.65rem; color: #a9822e; font-weight: 700; font-family: "JetBrains Mono", monospace; }
+.misconception-text { font-size: 0.92rem; line-height: 1.45; }
+
+/* Spaced-repetition review panel (wired in with spaced.js) */
+.review-panel { margin-top: 12px; padding: 12px 14px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; font-family: "JetBrains Mono", monospace; font-size: 0.8rem; }
+.review-tag { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.65rem; color: #a9822e; font-weight: 600; margin-bottom: 6px; }
+.review-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 3px 0; flex-wrap: wrap; }
+.review-name { font-weight: 600; }
+.review-ret { opacity: 0.8; }
+.review-status { opacity: 0.85; }
+.review-due { color: #a13c2f; font-weight: 700; }
+.review-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }

@@ -49,22 +49,59 @@ class ConceptTracer {
     this.history = []; // [{correct, masteryBefore, masteryAfter}]
   }
 
-  /** Feed one observed answer (boolean correct) and return updated mastery probability. */
-  observe(correct) {
+  /**
+   * Feed one observed answer and return updated mastery probability.
+   *
+   * @param {boolean} correct
+   * @param {boolean|null} [confident] Optional self-reported confidence ("sure"
+   *   vs "unsure"). Omitted/null (the default) reproduces the exact original
+   *   BKT update below — this parameter is purely additive.
+   *
+   * Confidence-weighting rationale: pSlip/pGuess are fixed per-concept
+   * constants, but a single student answer carries more information than just
+   * right/wrong when they also say how sure they were. Rather than changing
+   * the BKT recursion itself, confidence locally re-weights which explanation
+   * (know-it vs. guessed-it, slipped vs. genuinely-doesn't-know) is more
+   * plausible for THIS observation, by scaling the effective pGuess/pSlip
+   * used in that single update:
+   *   - correct & confident   -> lower effective pGuess  -> more credit (guessing is a less likely explanation)
+   *   - correct & unsure      -> higher effective pGuess -> less credit (looks more like a lucky guess)
+   *   - incorrect & confident -> lower effective pSlip   -> bigger penalty (looks like a real misconception, not a slip)
+   *   - incorrect & unsure    -> higher effective pSlip  -> smaller penalty (an unsure guess going wrong is the expected case)
+   * Only the parameter relevant to the observed outcome is touched (pGuess on
+   * correct answers, pSlip on incorrect ones) — the other stays at its base
+   * value, exactly as in the unweighted formula. The learning transition
+   * (pLearn) is untouched by confidence and still gates on correctness only,
+   * so the "a wrong answer can never net-increase mastery" invariant holds
+   * regardless of confidence.
+   */
+  observe(correct, confident = null) {
     const L = this.mastery;
+    const hasConfidence = confident === true || confident === false;
+    const CONFIDENCE_STRENGTH = 0.5; // how hard sure/unsure discounts or amplifies the assumed slip/guess rate
     let posterior;
     if (correct) {
+      const effGuess = !hasConfidence
+        ? this.pGuess
+        : confident
+          ? this.pGuess * (1 - CONFIDENCE_STRENGTH)
+          : Math.min(0.49, this.pGuess * (1 + CONFIDENCE_STRENGTH));
       const num = L * (1 - this.pSlip);
-      const den = num + (1 - L) * this.pGuess;
+      const den = num + (1 - L) * effGuess;
       posterior = den === 0 ? L : num / den;
     } else {
-      const num = L * this.pSlip;
+      const effSlip = !hasConfidence
+        ? this.pSlip
+        : confident
+          ? Math.max(0.01, this.pSlip * (1 - CONFIDENCE_STRENGTH))
+          : Math.min(0.49, this.pSlip * (1 + CONFIDENCE_STRENGTH));
+      const num = L * effSlip;
       const den = num + (1 - L) * (1 - this.pGuess);
       posterior = den === 0 ? L : num / den;
     }
     // Learning transition only applies after a correct answer — see note above.
     const updated = correct ? posterior + (1 - posterior) * this.pLearn : posterior;
-    this.history.push({ correct, masteryBefore: L, masteryAfter: updated });
+    this.history.push({ correct, confident: hasConfidence ? confident : null, masteryBefore: L, masteryAfter: updated });
     this.mastery = clamp01(updated);
     return this.mastery;
   }
@@ -91,9 +128,9 @@ class MasteryModel {
     });
   }
 
-  recordAnswer(conceptId, correct) {
+  recordAnswer(conceptId, correct, confident = null) {
     if (!this.tracers[conceptId]) throw new Error(`Unknown concept: ${conceptId}`);
-    return this.tracers[conceptId].observe(correct);
+    return this.tracers[conceptId].observe(correct, confident);
   }
 
   getMastery(conceptId) {

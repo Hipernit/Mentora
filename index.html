@@ -71,6 +71,7 @@
       <div class="action-row">
         <button class="primary-btn" id="generateBtn">Build my adaptive lesson</button>
         <button class="secondary-btn" id="demoBtn">Try Demo (no API key needed)</button>
+        <button class="secondary-btn hidden" id="resumeSessionBtn">Resume previous session</button>
       </div>
       <div id="statusMsg" role="status" aria-live="polite"></div>
     </div>
@@ -98,6 +99,9 @@
         <span class="threshold-caption">- - - - - Mastery threshold 90%</span>
       </div>
       <div id="dashboard"></div>
+      <div id="paramReadout" class="param-readout hidden"></div>
+      <div id="calibrationPanel" class="calibration-panel hidden"></div>
+      <div id="reviewPanel" class="review-panel hidden"></div>
     </div>
 
     <hr class="rule" />
@@ -131,6 +135,8 @@
 <footer>Built for the <span class="footer-highlight">Prometheus July AI Challenge</span> · Mentora</footer>
 
 <script src="./bkt.js"></script>
+<script src="./bktFit.js"></script>
+<script src="./spaced.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

@@ -34,8 +34,8 @@ const DEFAULT_PARAMS = { pInit: 0.3, pLearn: 0.25, pSlip: 0.1, pGuess: 0.2 };
 const BOUNDS = {
   pInit: [0.01, 0.9],
   pLearn: [0.01, 0.9],
-  pSlip: [0.01, 0.49],
-  pGuess: [0.01, 0.49],
+  pSlip: [0.01, 0.4],
+  pGuess: [0.01, 0.4],
 };
 
 /**
@@ -100,13 +100,28 @@ function fitParameters(sequences, opts = {}) {
   const minObservations = opts.minObservations ?? 8;
   const gridSteps = opts.gridSteps ?? 6;
   const refinePasses = opts.refinePasses ?? 4;
+  const prior = opts.prior ?? DEFAULT_PARAMS;
+  // Regularization strength. The log-likelihood grows with the number of
+  // answers, but this penalty toward `prior` stays fixed — so with only a
+  // handful of answers the prior dominates and the fit barely moves, while
+  // with lots of answers the data wins. This is what stops ~10 answers from
+  // producing a degenerate fit like guess=0.4 that craters everyone's mastery.
+  const priorStrength = opts.priorStrength ?? 25;
+
+  const penalty = (p) =>
+    (p.pInit - prior.pInit) ** 2 +
+    (p.pLearn - prior.pLearn) ** 2 +
+    (p.pSlip - prior.pSlip) ** 2 +
+    (p.pGuess - prior.pGuess) ** 2;
+  // MAP objective: maximize likelihood, penalized for straying from the prior.
+  const objective = (p) => totalLogLikelihood(sequences, p) - priorStrength * penalty(p);
 
   const observations = sequences.reduce((n, s) => n + s.length, 0);
-  const baselineLogLikelihood = totalLogLikelihood(sequences, DEFAULT_PARAMS);
+  const baselineLogLikelihood = totalLogLikelihood(sequences, prior);
 
   if (observations < minObservations) {
     return {
-      params: { ...DEFAULT_PARAMS },
+      params: { ...prior },
       fitted: false,
       reason: `only ${observations} observations (need ${minObservations})`,
       logLikelihood: baselineLogLikelihood,
@@ -123,8 +138,8 @@ function fitParameters(sequences, opts = {}) {
     pGuess: [...BOUNDS.pGuess],
   };
 
-  let best = { ...DEFAULT_PARAMS };
-  let bestLL = baselineLogLikelihood;
+  let best = { ...prior };
+  let bestObj = objective(prior);
 
   for (let pass = 0; pass < refinePasses; pass++) {
     const grid = {};
@@ -136,9 +151,9 @@ function fitParameters(sequences, opts = {}) {
         for (const pSlip of grid.pSlip) {
           for (const pGuess of grid.pGuess) {
             const cand = { pInit, pLearn, pSlip, pGuess };
-            const ll = totalLogLikelihood(sequences, cand);
-            if (ll > bestLL) {
-              bestLL = ll;
+            const obj = objective(cand);
+            if (obj > bestObj) {
+              bestObj = obj;
               best = cand;
             }
           }
@@ -155,7 +170,7 @@ function fitParameters(sequences, opts = {}) {
   return {
     params: best,
     fitted: true,
-    logLikelihood: bestLL,
+    logLikelihood: totalLogLikelihood(sequences, best),
     baselineLogLikelihood,
     observations,
   };
