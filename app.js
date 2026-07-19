@@ -49,6 +49,11 @@ const PROVIDERS = {
     keyLabel: "Claude API key (stored only in your browser) — console.anthropic.com",
     placeholder: "sk-ant-...",
   },
+  deepseek: {
+    label: "DeepSeek",
+    keyLabel: "DeepSeek API key (stored only in your browser) — platform.deepseek.com/api_keys",
+    placeholder: "sk-...",
+  },
 };
 
 const state = {
@@ -122,10 +127,12 @@ function syncProviderUI() {
   els.apiKeyLabel.textContent = p.keyLabel;
   els.apiKeyInput.placeholder = p.placeholder;
   els.apiKeyInput.value = localStorage.getItem(`mentora_api_key_${state.provider}`) || "";
-  els.keyHint.innerHTML =
-    state.provider === "gemini"
-      ? `Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>`
-      : `Get a key (with $5 free credit) at <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>`;
+  const keyHints = {
+    gemini: `Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>`,
+    claude: `Get a key (with $5 free credit) at <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>`,
+    deepseek: `Get a key (5M free tokens for 30 days, no card) at <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener">platform.deepseek.com/api_keys</a>`,
+  };
+  els.keyHint.innerHTML = keyHints[state.provider] || "";
 }
 
 function currentApiKey() {
@@ -147,7 +154,11 @@ function showLoading(visible, text = "Working...") {
 
 /** Routes to whichever provider is selected. Both return plain response text. */
 async function callLLM(prompt, maxTokens = 1500) {
-  return withRetry(() => (state.provider === "gemini" ? callGemini(prompt, maxTokens) : callClaude(prompt, maxTokens)));
+  return withRetry(() => {
+    if (state.provider === "gemini") return callGemini(prompt, maxTokens);
+    if (state.provider === "deepseek") return callDeepSeek(prompt, maxTokens);
+    return callClaude(prompt, maxTokens);
+  });
 }
 
 /**
@@ -230,6 +241,40 @@ async function callGemini(prompt, maxTokens = 1500) {
     const reason = data?.candidates?.[0]?.finishReason;
     throw new Error(`Gemini returned no text${reason ? ` (finishReason: ${reason})` : ""} — try again, or try shorter material`);
   }
+  return text;
+}
+
+/**
+ * DeepSeek API — OpenAI-compatible chat completions endpoint (api.deepseek.com).
+ * New accounts get a one-time 5M free token grant (30-day window, no card
+ * required), then cheap pay-as-you-go pricing — a good fallback when a
+ * Gemini free-tier key hits its per-minute rate limit mid-lesson.
+ * Get a key at platform.deepseek.com/api_keys.
+ */
+async function callDeepSeek(prompt, maxTokens = 1500) {
+  const res = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${currentApiKey()}`,
+    },
+    body: JSON.stringify({
+      model: "deepseek-v4-flash",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: maxTokens,
+      temperature: 0.7,
+      // Thinking mode defaults to on and spends extra tokens on chain-of-thought
+      // we don't need for structured JSON extraction/generation — disabling it
+      // keeps responses fast and cheap, same rationale as Gemini's
+      // thinkingBudget: 0 above.
+      thinking: { type: "disabled" },
+      stream: false,
+    }),
+  });
+  if (!res.ok) throw new Error(`DeepSeek API error ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content ?? "";
+  if (!text) throw new Error("DeepSeek returned no text — try again, or try shorter material");
   return text;
 }
 
