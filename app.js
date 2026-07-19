@@ -54,6 +54,11 @@ const PROVIDERS = {
     keyLabel: "DeepSeek API key (stored only in your browser) — platform.deepseek.com/api_keys",
     placeholder: "sk-...",
   },
+  github: {
+    label: "GitHub Models",
+    keyLabel: "GitHub personal access token with 'models: read' scope (stored only in your browser) — github.com/settings/tokens",
+    placeholder: "ghp_... or github_pat_...",
+  },
 };
 
 const state = {
@@ -131,6 +136,7 @@ function syncProviderUI() {
     gemini: `Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>`,
     claude: `Get a key (with $5 free credit) at <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>`,
     deepseek: `Get a key (5M free tokens for 30 days, no card) at <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener">platform.deepseek.com/api_keys</a>`,
+    github: `Create a fine-grained token with "models: read" permission at <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a> — free, rate-limited, tied to your GitHub account (no separate signup/balance)`,
   };
   els.keyHint.innerHTML = keyHints[state.provider] || "";
 }
@@ -157,6 +163,7 @@ async function callLLM(prompt, maxTokens = 1500) {
   return withRetry(() => {
     if (state.provider === "gemini") return callGemini(prompt, maxTokens);
     if (state.provider === "deepseek") return callDeepSeek(prompt, maxTokens);
+    if (state.provider === "github") return callGitHubModels(prompt, maxTokens);
     return callClaude(prompt, maxTokens);
   });
 }
@@ -275,6 +282,39 @@ async function callDeepSeek(prompt, maxTokens = 1500) {
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content ?? "";
   if (!text) throw new Error("DeepSeek returned no text — try again, or try shorter material");
+  return text;
+}
+
+/**
+ * GitHub Models API — free, rate-limited inference tied to a GitHub personal
+ * access token (`models: read` scope) rather than a separate account or
+ * top-up balance. There's no balance to run dry, unlike DeepSeek's
+ * grant-based free tier — a good fallback when another provider's free tier
+ * is rate-limited or out of credit. Uses gpt-4o-mini, one of the more
+ * generously-limited "low" tier models (15 req/min, 150/day on a free
+ * GitHub account) rather than a "high" tier reasoning model, to avoid
+ * repeating the same rate-limit problem. Get a token at
+ * github.com/settings/personal-access-tokens/new.
+ */
+async function callGitHubModels(prompt, maxTokens = 1500) {
+  const res = await fetch("https://models.github.ai/inference/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${currentApiKey()}`,
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+  });
+  if (!res.ok) throw new Error(`GitHub Models API error ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content ?? "";
+  if (!text) throw new Error("GitHub Models returned no text — try again, or try shorter material");
   return text;
 }
 
