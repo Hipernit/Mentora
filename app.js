@@ -147,7 +147,30 @@ function showLoading(visible, text = "Working...") {
 
 /** Routes to whichever provider is selected. Both return plain response text. */
 async function callLLM(prompt, maxTokens = 1500) {
-  return state.provider === "gemini" ? callGemini(prompt, maxTokens) : callClaude(prompt, maxTokens);
+  return withRetry(() => (state.provider === "gemini" ? callGemini(prompt, maxTokens) : callClaude(prompt, maxTokens)));
+}
+
+/**
+ * Retries a rate-limited (429) call with exponential backoff. Course
+ * generation makes several LLM calls back-to-back (concept extraction, then
+ * one call per concept) — free-tier keys can cap requests per minute (Gemini's
+ * free tier has been seen as low as 5 req/min on some models), so a single
+ * 429 partway through would otherwise abort the whole lesson instead of just
+ * pausing briefly. Only 429s are retried; any other error fails immediately,
+ * same as before.
+ */
+async function withRetry(fn, { retries = 3, baseDelayMs = 4000 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const is429 = /\b429\b/.test(err.message) || /RESOURCE_EXHAUSTED/.test(err.message);
+      if (!is429 || attempt >= retries) throw err;
+      const delay = baseDelayMs * 2 ** attempt;
+      showLoading(true, `Rate limited by the API — retrying in ${Math.round(delay / 1000)}s...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
 }
 
 async function callClaude(prompt, maxTokens = 1500) {
@@ -280,39 +303,37 @@ function validateAndRepairGraph(rawConcepts) {
 }
 
 /**
- * Generates a fixed, named misconception taxonomy for one concept (3-4 short
- * ids like "confuses inputs and outputs"), once, before any quiz questions are
- * written. Every wrong choice in that concept's quiz is then tagged against
- * this SAME small list (see generateQuiz), instead of the LLM inventing a new
- * free-text label per question. Free-text-per-question labels can't be
- * string-matched against each other, so "3 students share this misconception"
- * is impossible to compute honestly; a fixed per-concept taxonomy is what
- * makes that aggregation real once real students start using the tool.
+ * Generates a concept's misconception taxonomy AND its 3-question quiz in ONE
+ * LLM call. This used to be two separate calls per concept (taxonomy, then
+ * quiz) — but that doubles the request volume of an already-multi-call course
+ * generation (1 extraction call + N concept calls becomes 1 + 2N), which is
+ * enough to trip a free-tier rate limit (Gemini's free tier has been seen as
+ * low as 5 requests/minute on some models) partway through a 5-8 concept
+ * lesson. One combined call per concept keeps the original 1+N call budget
+ * while still getting a taxonomy fixed BEFORE the quiz references it — the
+ * model just does both steps in the same response instead of a round trip.
  */
-async function generateMisconceptionTaxonomy(concept, material) {
-  const prompt = `For the concept "${concept.label}" from this material, list 3 to 4 SPECIFIC, DISTINCT misconceptions a student might genuinely hold — real conceptual errors, not "doesn't know the answer" or "picked randomly". Each is a short named category (a few words, not a full sentence).
-Material:
+async function generateConceptContent(concept, material) {
+  const prompt = `You are writing quiz material for the concept "${concept.label}", based on this study material:
 """
 ${material}
 """
-Return ONLY valid JSON: [{"id":"m1","label":"short misconception name"}, {"id":"m2","label":"..."}]`;
-  const text = await callLLM(prompt, 400);
-  const taxonomy = extractJson(text);
-  return Array.isArray(taxonomy) && taxonomy.length ? taxonomy : [{ id: "m1", label: "general misunderstanding" }];
-}
 
-async function generateQuiz(concept, material, taxonomy) {
-  const taxonomyList = (taxonomy || []).map((m) => `${m.id}: ${m.label}`).join("\n");
-  const prompt = `Write exactly 3 multiple-choice questions (4 options each) testing understanding of the concept "${concept.label}", based on this material:
-"""
-${material}
-"""
-Each question has exactly one correct choice and three incorrect choices. Every incorrect choice MUST be tagged with the id of the closest-matching misconception from this fixed taxonomy (reuse ids across questions where they fit — don't invent new ones):
-${taxonomyList}
+Step 1 — Misconceptions: list 3 to 4 SPECIFIC, DISTINCT misconceptions a student might genuinely hold about this concept — real conceptual errors, not "doesn't know the answer" or "picked randomly". Each is a short named category (a few words, not a full sentence), with a short id like "m1", "m2".
 
-Return ONLY valid JSON: [{"q":"...","choices":[{"text":"...","correct":true},{"text":"...","correct":false,"misconceptionId":"m1"},{"text":"...","correct":false,"misconceptionId":"m2"},{"text":"...","correct":false,"misconceptionId":"m1"}]}, ...]. Vary difficulty slightly across the 3 questions.`;
-  const text = await callLLM(prompt, 1100);
-  return sanitizeQuiz(extractJson(text), taxonomy);
+Step 2 — Quiz: write exactly 3 multiple-choice questions (4 options each) testing this concept. Each question has exactly one correct choice and three incorrect choices. Every incorrect choice MUST be tagged with the id of the closest-matching misconception from your Step 1 list (reuse ids across questions where they fit — don't invent new ones). Vary difficulty slightly across the 3 questions.
+
+Return ONLY valid JSON in this exact shape:
+{"misconceptions":[{"id":"m1","label":"short misconception name"},{"id":"m2","label":"..."}],
+ "quiz":[{"q":"...","choices":[{"text":"...","correct":true},{"text":"...","correct":false,"misconceptionId":"m1"},{"text":"...","correct":false,"misconceptionId":"m2"},{"text":"...","correct":false,"misconceptionId":"m1"}]}, ...]}`;
+  const text = await callLLM(prompt, 1600);
+  const parsed = extractJson(text);
+  const taxonomy =
+    Array.isArray(parsed.misconceptions) && parsed.misconceptions.length
+      ? parsed.misconceptions
+      : [{ id: "m1", label: "general misunderstanding" }];
+  const quiz = sanitizeQuiz(parsed.quiz, taxonomy);
+  return { taxonomy, quiz };
 }
 
 /**
@@ -563,11 +584,9 @@ async function generateCourse(demo) {
     } else {
       for (let i = 0; i < state.concepts.length; i++) {
         const c = state.concepts[i];
-        showLoading(true, `Mapping misconceptions ${i + 1} of ${state.concepts.length}: ${c.label}...`);
-        const taxonomy = await generateMisconceptionTaxonomy(c, material);
-        state.misconceptions[c.id] = taxonomy;
         showLoading(true, `Writing quiz ${i + 1} of ${state.concepts.length}: ${c.label}...`);
-        const quiz = await generateQuiz(c, material, taxonomy);
+        const { taxonomy, quiz } = await generateConceptContent(c, material);
+        state.misconceptions[c.id] = taxonomy;
         state.quizzes[c.id] = quiz.map(shuffleChoices);
       }
     }
