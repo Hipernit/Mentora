@@ -17,49 +17,24 @@
  * whole adaptive-learning loop is still fully demoable offline.
  */
 
-// Mastery bar: raised from the textbook-BKT-demo default of 0.85 so a
-// concept can't be "mastered" off one or two lucky answers. See the BKT
-// params on the MasteryModel construction in generateCourse() for the other
-// half of this tuning (slower pLearn, more skeptical pGuess/pSlip).
-const MASTERY_THRESHOLD = 0.9;
+// MASTERY_THRESHOLD and BKT_PARAMS (starting BKT parameters, used until the
+// fitter has learned better ones from THIS student's answers — see
+// learnAndApply) now live in demo-data.js, shared with eval.js/teacher.js so
+// the live model and the "default vs learned" readout never drift out of
+// sync with the simulations on those pages. See demo-data.js's header.
+
 // Quiz pool per concept is 3 questions (see generateQuiz), but questions
 // cycle via modulo once exhausted — raised from 3 so the harder threshold
 // is still reachable within a lesson instead of force-advancing a student
 // who hasn't actually crossed it yet.
 const MAX_ATTEMPTS_PER_CONCEPT = 5;
 
-// Starting BKT parameters, used until the fitter has enough of THIS student's
-// answers to learn better ones (see learnAndApply). One source of truth so the
-// live model and the "default vs learned" readout never drift apart.
-const DEFAULT_BKT = { pInit: 0.2, pLearn: 0.22, pSlip: 0.08, pGuess: 0.25 };
+// Full-session persistence (SAVE_KEY + save/load/clear) lives in persist.js
+// as a `Session` namespace — see that file's header.
 
-// localStorage key for full-session persistence (Feature 3) — lets a student
-// close the tab mid-lesson and resume exactly where they left off, including
-// mastery history, learned BKT params, and the spaced-repetition schedule.
-const SAVE_KEY = "mentora_session_v1";
-
-const PROVIDERS = {
-  gemini: {
-    label: "Gemini",
-    keyLabel: "Gemini API key (stored only in your browser) — get one free at aistudio.google.com/apikey",
-    placeholder: "paste your Gemini API key",
-  },
-  claude: {
-    label: "Claude",
-    keyLabel: "Claude API key (stored only in your browser) — console.anthropic.com",
-    placeholder: "sk-ant-...",
-  },
-  deepseek: {
-    label: "DeepSeek",
-    keyLabel: "DeepSeek API key (stored only in your browser) — platform.deepseek.com/api_keys",
-    placeholder: "sk-...",
-  },
-  github: {
-    label: "GitHub Models",
-    keyLabel: "GitHub personal access token with 'models: read' scope (stored only in your browser) — github.com/settings/tokens",
-    placeholder: "ghp_... or github_pat_...",
-  },
-};
+// PROVIDERS (per-provider label/hint text for the setup UI) now lives in
+// providers.js, alongside the actual API-calling code — see that file's
+// header for why the LLM layer is a separate, DOM-free module.
 
 const state = {
   provider: localStorage.getItem("mentora_provider") || "gemini",
@@ -80,10 +55,10 @@ document.addEventListener("DOMContentLoaded", () => {
   els.providerSelect.value = state.provider;
   syncProviderUI();
 
-  if (els.resumeSessionBtn && localStorage.getItem(SAVE_KEY)) {
+  if (els.resumeSessionBtn && Session.exists()) {
     els.resumeSessionBtn.classList.remove("hidden");
     els.resumeSessionBtn.addEventListener("click", () => {
-      if (!loadSession()) return;
+      if (!Session.load(state)) return;
       els.setupView.classList.add("hidden");
       els.learnView.classList.remove("hidden");
       els.headerProgress.classList.remove("hidden");
@@ -118,7 +93,7 @@ function bindEvents() {
   els.saveKeyBtn.addEventListener("click", () => {
     const key = els.apiKeyInput.value.trim();
     localStorage.setItem(`mentora_api_key_${state.provider}`, key);
-    setStatus(`${PROVIDERS[state.provider].label} API key saved locally in your browser.`);
+    setStatus(`${LLM.PROVIDERS[state.provider].label} API key saved locally in your browser.`);
   });
   els.generateBtn.addEventListener("click", () => generateCourse(false));
   els.demoBtn.addEventListener("click", () => generateCourse(true));
@@ -128,7 +103,7 @@ function bindEvents() {
 }
 
 function syncProviderUI() {
-  const p = PROVIDERS[state.provider];
+  const p = LLM.PROVIDERS[state.provider];
   els.apiKeyLabel.textContent = p.keyLabel;
   els.apiKeyInput.placeholder = p.placeholder;
   els.apiKeyInput.value = localStorage.getItem(`mentora_api_key_${state.provider}`) || "";
@@ -157,193 +132,25 @@ function showLoading(visible, text = "Working...") {
 }
 
 /* ------------------------------ LLM dispatcher ----------------------------- */
+// The actual multi-provider calling code (Claude/Gemini/DeepSeek/GitHub
+// Models, retry-with-backoff, JSON extraction/retry) lives in providers.js
+// as a standalone, state-free module — see its header. These two wrappers
+// are the only bridge between it and app.js's state/UI: they supply the
+// current provider + API key, and turn a 429 backoff into a loading-overlay
+// message via onRetry.
 
-/** Routes to whichever provider is selected. Both return plain response text. */
+function onLlmRetry(delayMs) {
+  showLoading(true, `Rate limited by the API — retrying in ${Math.round(delayMs / 1000)}s...`);
+}
+
+/** Routes to whichever provider is currently selected. Returns plain response text. */
 async function callLLM(prompt, maxTokens = 1500) {
-  return withRetry(() => {
-    if (state.provider === "gemini") return callGemini(prompt, maxTokens);
-    if (state.provider === "deepseek") return callDeepSeek(prompt, maxTokens);
-    if (state.provider === "github") return callGitHubModels(prompt, maxTokens);
-    return callClaude(prompt, maxTokens);
-  });
+  return LLM.callLLM(state.provider, currentApiKey(), prompt, maxTokens, onLlmRetry);
 }
 
-/**
- * Retries a rate-limited (429) call with exponential backoff. Course
- * generation makes several LLM calls back-to-back (concept extraction, then
- * one call per concept) — free-tier keys can cap requests per minute (Gemini's
- * free tier has been seen as low as 5 req/min on some models), so a single
- * 429 partway through would otherwise abort the whole lesson instead of just
- * pausing briefly. Only 429s are retried; any other error fails immediately,
- * same as before.
- */
-async function withRetry(fn, { retries = 3, baseDelayMs = 4000 } = {}) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      const is429 = /\b429\b/.test(err.message) || /RESOURCE_EXHAUSTED/.test(err.message);
-      if (!is429 || attempt >= retries) throw err;
-      const delay = baseDelayMs * 2 ** attempt;
-      showLoading(true, `Rate limited by the API — retrying in ${Math.round(delay / 1000)}s...`);
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-}
-
-async function callClaude(prompt, maxTokens = 1500) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": currentApiKey(),
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-5",
-      max_tokens: maxTokens,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-  if (!res.ok) throw new Error(`Claude API error ${res.status}: ${await res.text()}`);
-  const data = await res.json();
-  return data.content[0].text;
-}
-
-/**
- * Google Gemini API (free tier: no card required, no expiration, ~1500 req/day
- * on Flash models as of mid-2026). Get a key at https://aistudio.google.com/apikey
- *
- * NOTE: Google's specific model versions get deprecated/restricted to new
- * users on a rolling basis (e.g. gemini-2.0-flash, then gemini-2.5-flash both
- * stopped working for new accounts in 2026). We use the "gemini-flash-latest"
- * alias, which Google always points at its current default Flash model, so
- * this stays working across future model releases without code changes.
- */
-async function callGemini(prompt, maxTokens = 1500) {
-  const model = "gemini-flash-latest";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(currentApiKey())}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      // Newer Gemini Flash models "think" before answering by default, and
-      // that internal reasoning counts against maxOutputTokens — with a low
-      // budget (800-1500) the thinking alone can exhaust it, leaving zero
-      // tokens for the actual answer. thinkingBudget: 0 disables that, and
-      // we give extra headroom on maxOutputTokens as a safety margin.
-      generationConfig: {
-        maxOutputTokens: Math.max(maxTokens, 2048),
-        temperature: 0.7,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    }),
-  });
-  if (!res.ok) throw new Error(`Gemini API error ${res.status}: ${await res.text()}`);
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
-  if (!text) {
-    const reason = data?.candidates?.[0]?.finishReason;
-    throw new Error(`Gemini returned no text${reason ? ` (finishReason: ${reason})` : ""} — try again, or try shorter material`);
-  }
-  return text;
-}
-
-/**
- * DeepSeek API — OpenAI-compatible chat completions endpoint (api.deepseek.com).
- * New accounts get a one-time 5M free token grant (30-day window, no card
- * required), then cheap pay-as-you-go pricing — a good fallback when a
- * Gemini free-tier key hits its per-minute rate limit mid-lesson.
- * Get a key at platform.deepseek.com/api_keys.
- */
-async function callDeepSeek(prompt, maxTokens = 1500) {
-  const res = await fetch("https://api.deepseek.com/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${currentApiKey()}`,
-    },
-    body: JSON.stringify({
-      model: "deepseek-v4-flash",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: maxTokens,
-      temperature: 0.7,
-      // Thinking mode defaults to on and spends extra tokens on chain-of-thought
-      // we don't need for structured JSON extraction/generation — disabling it
-      // keeps responses fast and cheap, same rationale as Gemini's
-      // thinkingBudget: 0 above.
-      thinking: { type: "disabled" },
-      stream: false,
-    }),
-  });
-  if (!res.ok) throw new Error(`DeepSeek API error ${res.status}: ${await res.text()}`);
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content ?? "";
-  if (!text) throw new Error("DeepSeek returned no text — try again, or try shorter material");
-  return text;
-}
-
-/**
- * GitHub Models API — free, rate-limited inference tied to a GitHub personal
- * access token (`models: read` scope) rather than a separate account or
- * top-up balance. There's no balance to run dry, unlike DeepSeek's
- * grant-based free tier — a good fallback when another provider's free tier
- * is rate-limited or out of credit. Uses gpt-4o-mini, one of the more
- * generously-limited "low" tier models (15 req/min, 150/day on a free
- * GitHub account) rather than a "high" tier reasoning model, to avoid
- * repeating the same rate-limit problem. Get a token at
- * github.com/settings/personal-access-tokens/new.
- */
-async function callGitHubModels(prompt, maxTokens = 1500) {
-  const res = await fetch("https://models.github.ai/inference/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${currentApiKey()}`,
-    },
-    body: JSON.stringify({
-      model: "openai/gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: maxTokens,
-      temperature: 0.7,
-    }),
-  });
-  if (!res.ok) throw new Error(`GitHub Models API error ${res.status}: ${await res.text()}`);
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content ?? "";
-  if (!text) throw new Error("GitHub Models returned no text — try again, or try shorter material");
-  return text;
-}
-
-function extractJson(text) {
-  const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-  if (!match) throw new Error("No JSON found in model response");
-  return JSON.parse(match[0]);
-}
-
-/**
- * Calls the LLM and parses its response as JSON, retrying with a FRESH
- * generation (a new sample, not just a backoff wait like withRetry's 429
- * handling) if the output isn't valid JSON. Smaller/faster models — seen in
- * practice with GitHub Models' gpt-4o-mini — are more prone than
- * Gemini/Claude to truncating an array mid-response or dropping a comma.
- * Since sampling is non-deterministic, a clean retry frequently just works
- * where the first attempt produced malformed JSON.
- */
+/** Same as callLLM, but parses the response as JSON (retrying on malformed output). */
 async function callLLMForJson(prompt, maxTokens = 1500, retries = 2) {
-  let lastErr;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const text = await callLLM(prompt, maxTokens);
-    try {
-      return extractJson(text);
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  throw new Error(`Model response wasn't valid JSON after ${retries + 1} attempt(s): ${lastErr.message}`);
+  return LLM.callLLMForJson(state.provider, currentApiKey(), prompt, maxTokens, retries, onLlmRetry);
 }
 
 async function extractConcepts(material) {
@@ -510,157 +317,19 @@ In ONE short sentence addressed to the student as "You", name the SPECIFIC misco
   return callLLM(prompt, 120);
 }
 
-/* ------------------------------- Demo data -------------------------------- */
-
-const DEMO_MATERIAL = `Photosynthesis is the process by which plants convert light energy into chemical energy. It occurs in two stages: the light-dependent reactions, which take place in the thylakoid membrane and produce ATP and NADPH while splitting water and releasing oxygen, and the light-independent reactions (Calvin cycle), which occur in the stroma and use ATP and NADPH to fix carbon dioxide into glucose. Chlorophyll, the main pigment involved, absorbs mostly red and blue light and reflects green light, which is why plants appear green.`;
-
-const DEMO_CONCEPTS = [
-  { id: "c1", label: "Purpose of photosynthesis", dependsOn: [] },
-  { id: "c2", label: "Light-dependent reactions", dependsOn: ["c1"] },
-  { id: "c3", label: "Calvin cycle (light-independent)", dependsOn: ["c2"] },
-  { id: "c4", label: "Role of chlorophyll", dependsOn: ["c1"] },
-  { id: "c5", label: "Why plants appear green", dependsOn: ["c4"] },
-];
-
-const DEMO_MISCONCEPTIONS = {
-  c1: [
-    { id: "m1", label: "You're likely conflating what photosynthesis produces with what it consumes — it stores energy in glucose, rather than only making oxygen or breaking sugar down." },
-    { id: "m2", label: "You're likely mixing photosynthesis up with cellular respiration — photosynthesis builds glucose, it doesn't release energy from it." },
-    { id: "m3", label: "You may be placing photosynthesis in the wrong organelle — it happens in the chloroplast, not elsewhere in the cell." },
-  ],
-  c2: [
-    { id: "m1", label: "You may be mixing up where the light-dependent reactions happen — they run in the thylakoid membrane, not the stroma or cytoplasm." },
-    { id: "m2", label: "You're likely attributing the Calvin cycle's output (glucose) to the light reactions — the light reactions produce ATP and NADPH, not glucose directly." },
-    { id: "m3", label: "You may be confusing what gets split and what gets released — water is split to release oxygen, not the reverse." },
-  ],
-  c3: [
-    { id: "m1", label: "You're likely placing the Calvin cycle in the wrong compartment — it happens in the stroma, not the thylakoid membrane." },
-    { id: "m2", label: "You're likely confusing the Calvin cycle's inputs with the light reactions' — it consumes ATP and NADPH rather than using sunlight directly." },
-    { id: "m3", label: "You may be mixing up the Calvin cycle's end product with one of its inputs — glucose is what comes out, not what goes in." },
-  ],
-  c4: [
-    { id: "m1", label: "You may be naming the wrong pigment — chlorophyll, not carotene or melanin, is the main pigment driving photosynthesis." },
-    { id: "m2", label: "You're likely inverting what chlorophyll absorbs — it absorbs red and blue light, not green." },
-    { id: "m3", label: "You may be placing chlorophyll in the wrong structure — it sits in the thylakoid membrane." },
-  ],
-  c5: [
-    { id: "m1", label: "You're likely inverting absorption and reflection — plants look green because chlorophyll reflects green light, not because it absorbs it." },
-    { id: "m2", label: "You may be assuming plants lack pigment entirely, when the color comes from which wavelengths chlorophyll reflects versus absorbs." },
-    { id: "m3", label: "You're likely reasoning about wavelengths backwards — green is the LEAST absorbed, which is why it's reflected back to your eye." },
-  ],
-};
-
-const DEMO_QUIZZES = {
-  c1: [
-    { q: "What is the overall purpose of photosynthesis?", choices: [
-      { text: "Convert light energy into chemical energy", correct: true },
-      { text: "Convert CO2 into oxygen only", correct: false, misconceptionId: "m1" },
-      { text: "Break down glucose for energy", correct: false, misconceptionId: "m2" },
-      { text: "Absorb water from soil", correct: false, misconceptionId: "m3" },
-    ] },
-    { q: "Which of these is a direct product of photosynthesis?", choices: [
-      { text: "Glucose", correct: true },
-      { text: "Nitrogen", correct: false, misconceptionId: "m1" },
-      { text: "Ozone", correct: false, misconceptionId: "m3" },
-      { text: "Salt", correct: false, misconceptionId: "m2" },
-    ] },
-    { q: "Photosynthesis primarily occurs in which organelle?", choices: [
-      { text: "Chloroplast", correct: true },
-      { text: "Mitochondrion", correct: false, misconceptionId: "m2" },
-      { text: "Nucleus", correct: false, misconceptionId: "m3" },
-      { text: "Ribosome", correct: false, misconceptionId: "m3" },
-    ] },
-  ],
-  c2: [
-    { q: "Where do light-dependent reactions occur?", choices: [
-      { text: "Thylakoid membrane", correct: true },
-      { text: "Stroma", correct: false, misconceptionId: "m1" },
-      { text: "Cytoplasm", correct: false, misconceptionId: "m1" },
-      { text: "Cell wall", correct: false, misconceptionId: "m1" },
-    ] },
-    { q: "What do light-dependent reactions produce?", choices: [
-      { text: "ATP and NADPH", correct: true },
-      { text: "Glucose directly", correct: false, misconceptionId: "m2" },
-      { text: "CO2", correct: false, misconceptionId: "m2" },
-      { text: "Chlorophyll", correct: false, misconceptionId: "m2" },
-    ] },
-    { q: "What molecule is split during light-dependent reactions, releasing oxygen?", choices: [
-      { text: "Water", correct: true },
-      { text: "Glucose", correct: false, misconceptionId: "m3" },
-      { text: "Carbon dioxide", correct: false, misconceptionId: "m3" },
-      { text: "ATP", correct: false, misconceptionId: "m3" },
-    ] },
-  ],
-  c3: [
-    { q: "Where does the Calvin cycle occur?", choices: [
-      { text: "Stroma", correct: true },
-      { text: "Thylakoid membrane", correct: false, misconceptionId: "m1" },
-      { text: "Mitochondria", correct: false, misconceptionId: "m1" },
-      { text: "Nucleus", correct: false, misconceptionId: "m1" },
-    ] },
-    { q: "What does the Calvin cycle use to fix carbon dioxide?", choices: [
-      { text: "ATP and NADPH", correct: true },
-      { text: "Oxygen and water", correct: false, misconceptionId: "m2" },
-      { text: "Chlorophyll only", correct: false, misconceptionId: "m2" },
-      { text: "Sunlight directly", correct: false, misconceptionId: "m2" },
-    ] },
-    { q: "What is the end product of the Calvin cycle?", choices: [
-      { text: "Glucose", correct: true },
-      { text: "Water", correct: false, misconceptionId: "m3" },
-      { text: "Oxygen gas", correct: false, misconceptionId: "m3" },
-      { text: "ATP", correct: false, misconceptionId: "m3" },
-    ] },
-  ],
-  c4: [
-    { q: "What is the main pigment involved in photosynthesis?", choices: [
-      { text: "Chlorophyll", correct: true },
-      { text: "Carotene", correct: false, misconceptionId: "m1" },
-      { text: "Melanin", correct: false, misconceptionId: "m1" },
-      { text: "Hemoglobin", correct: false, misconceptionId: "m1" },
-    ] },
-    { q: "What does chlorophyll primarily absorb?", choices: [
-      { text: "Red and blue light", correct: true },
-      { text: "Green light", correct: false, misconceptionId: "m2" },
-      { text: "Ultraviolet light", correct: false, misconceptionId: "m2" },
-      { text: "Infrared light", correct: false, misconceptionId: "m2" },
-    ] },
-    { q: "Chlorophyll is located in which structure?", choices: [
-      { text: "Thylakoid membrane", correct: true },
-      { text: "Cell wall", correct: false, misconceptionId: "m3" },
-      { text: "Nucleus", correct: false, misconceptionId: "m3" },
-      { text: "Ribosome", correct: false, misconceptionId: "m3" },
-    ] },
-  ],
-  c5: [
-    { q: "Why do plants appear green?", choices: [
-      { text: "Chlorophyll reflects green light", correct: true },
-      { text: "Chlorophyll absorbs green light", correct: false, misconceptionId: "m1" },
-      { text: "Plants lack pigment", correct: false, misconceptionId: "m2" },
-      { text: "Green light is invisible", correct: false, misconceptionId: "m2" },
-    ] },
-    { q: "Which wavelengths are least absorbed by chlorophyll?", choices: [
-      { text: "Green", correct: true },
-      { text: "Red", correct: false, misconceptionId: "m3" },
-      { text: "Blue", correct: false, misconceptionId: "m3" },
-      { text: "Violet", correct: false, misconceptionId: "m3" },
-    ] },
-    { q: "If a plant absorbed all wavelengths equally, it would appear:", choices: [
-      { text: "Black", correct: true },
-      { text: "Green", correct: false, misconceptionId: "m1" },
-      { text: "White", correct: false, misconceptionId: "m1" },
-      { text: "Red", correct: false, misconceptionId: "m1" },
-    ] },
-  ],
-};
+// DEMO_MATERIAL / DEMO_CONCEPTS / DEMO_MISCONCEPTIONS / DEMO_QUIZZES (the
+// bundled photosynthesis demo lesson behind "Try Demo") now live in
+// demo-data.js, shared with eval.js/teacher.js's simulations of the same
+// lesson — see that file's header.
 
 /* -------------------------------- Main flow -------------------------------- */
 
 async function generateCourse(demo) {
-  clearSession(); // starting fresh material should not leave a stale resume point
+  Session.clear(); // starting fresh material should not leave a stale resume point
   state.demoMode = demo;
   const material = demo ? DEMO_MATERIAL : els.materialInput.value.trim();
   if (!material) return setStatus("Paste some study material first.", true);
-  if (!demo && !currentApiKey()) return setStatus(`Add your ${PROVIDERS[state.provider].label} API key, or click 'Try Demo' instead.`, true);
+  if (!demo && !currentApiKey()) return setStatus(`Add your ${LLM.PROVIDERS[state.provider].label} API key, or click 'Try Demo' instead.`, true);
 
   els.generateBtn.disabled = true;
   els.demoBtn.disabled = true;
@@ -668,7 +337,7 @@ async function generateCourse(demo) {
     if (demo) {
       showLoading(true, "Loading demo lesson...");
     } else {
-      showLoading(true, `Extracting concepts with ${PROVIDERS[state.provider].label}...`);
+      showLoading(true, `Extracting concepts with ${LLM.PROVIDERS[state.provider].label}...`);
     }
     const rawConcepts = demo ? DEMO_CONCEPTS : await extractConcepts(material);
     // Live extraction can emit a dangling or cyclic dependsOn graph (references
@@ -702,7 +371,7 @@ async function generateCourse(demo) {
     // a single correct answer weaker proof of real understanding. Combined
     // with the raised MASTERY_THRESHOLD below, mastering a concept now
     // reliably takes multiple consistent correct answers, not one or two.
-    state.model = new MasteryModel(state.concepts, DEFAULT_BKT);
+    state.model = new MasteryModel(state.concepts, BKT_PARAMS);
     state.material = material;
     state.calibration = []; // {predicted, correct} per answer, for the calibration check
     state.schedule = {};    // conceptId -> {lastReviewed, reviewCount} for spaced repetition
@@ -764,13 +433,13 @@ function advanceToRecommended() {
       </div>`;
     els.recommendation.textContent = "";
     document.getElementById("completionRestartBtn")?.addEventListener("click", () => {
-      clearSession();
+      Session.clear();
       location.reload();
     });
     renderDashboard();
     renderGraph();
     renderCalibration();
-    saveSession();
+    Session.save(state);
     return;
   }
   state.currentConcept = next;
@@ -778,7 +447,7 @@ function advanceToRecommended() {
   els.recommendation.textContent = `Next up · ${next.label} · current mastery ${(state.model.getMastery(next.id) * 100).toFixed(0)}%`;
   renderGraph();
   renderQuestion();
-  saveSession();
+  Session.save(state);
 }
 
 /** Builds a stable "C01" style display code for a concept from its position in the graph. */
@@ -852,7 +521,7 @@ function learnAndApply() {
   if (typeof fitModel !== "function") return; // bktFit.js not present
   // Regularize toward our starting defaults so a short lesson's worth of
   // answers nudges the parameters rather than swinging them to extremes.
-  const result = fitModel(state.model, { minObservations: 6, prior: DEFAULT_BKT });
+  const result = fitModel(state.model, { minObservations: 6, prior: BKT_PARAMS });
   state.lastFit = result;
   if (result.fitted) {
     const rebuilt = new MasteryModel(state.concepts, result.params);
@@ -872,14 +541,14 @@ function renderParams(result) {
   if (!result.fitted) {
     els.paramReadout.innerHTML =
       `<div class="param-tag">model parameters</div>` +
-      `<div class="param-line">Defaults — ${fmt(DEFAULT_BKT)}</div>` +
+      `<div class="param-line">Defaults — ${fmt(BKT_PARAMS)}</div>` +
       `<div class="param-note">Learning from your answers… (${result.observations}/6 needed to fit)</div>`;
     return;
   }
   els.paramReadout.innerHTML =
     `<div class="param-tag param-tag-learned">model parameters · learned</div>` +
     `<div class="param-line">Learned — ${fmt(result.params)}</div>` +
-    `<div class="param-note">Fit from ${result.observations} of your answers by maximum likelihood (was: ${fmt(DEFAULT_BKT)})</div>`;
+    `<div class="param-note">Fit from ${result.observations} of your answers by maximum likelihood (was: ${fmt(BKT_PARAMS)})</div>`;
 }
 
 /**
@@ -1123,90 +792,13 @@ function recordReviewResult(concept, correct) {
   s.lastReviewed = now();
   s.reviewCount = correct ? (s.reviewCount || 0) + 1 : 1;
   state.schedule[concept.id] = s;
-  saveSession();
+  Session.save(state);
 }
 
 /* --------------------------- Session persistence ---------------------------- */
-
-/**
- * Serializes the whole lesson (concepts, quizzes, material, calibration log,
- * spaced-repetition schedule, clock offset, and per-concept BKT answer
- * histories) to localStorage so a student can close the tab mid-lesson and
- * resume exactly where they left off. Only the raw `correct` booleans are
- * saved per concept — masteryBefore/masteryAfter are recomputed on replay
- * (see loadSession), since ConceptTracer.observe() is deterministic.
- */
-function saveSession() {
-  if (!state.model) return;
-  const params = state.lastFit?.params || DEFAULT_BKT;
-  const histories = {};
-  state.concepts.forEach((c) => {
-    histories[c.id] = (state.model.tracers[c.id]?.history || []).map((h) => h.correct);
-  });
-  const payload = {
-    concepts: state.concepts,
-    quizzes: state.quizzes,
-    misconceptions: state.misconceptions,
-    material: state.material,
-    demoMode: state.demoMode,
-    calibration: state.calibration,
-    schedule: state.schedule,
-    clockOffset: state.clockOffset,
-    params,
-    histories,
-  };
-  try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
-  } catch (err) {
-    console.error("saveSession failed", err);
-  }
-}
-
-/**
- * Rebuilds state from a saved session: reconstructs the MasteryModel with the
- * saved (learned) BKT params, then replays each concept's saved answer
- * history through recordAnswer so mastery, history, and everything derived
- * from it end up bit-for-bit identical to where the student left off.
- * Returns false (and leaves state untouched) if there's no valid save.
- */
-function loadSession() {
-  const raw = localStorage.getItem(SAVE_KEY);
-  if (!raw) return false;
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch (err) {
-    console.error("loadSession: corrupt saved session", err);
-    return false;
-  }
-  if (!data || !Array.isArray(data.concepts) || !data.concepts.length) return false;
-
-  state.concepts = data.concepts;
-  state.quizzes = data.quizzes || {};
-  state.misconceptions = data.misconceptions || {};
-  state.material = data.material || "";
-  state.demoMode = !!data.demoMode;
-  state.calibration = data.calibration || [];
-  state.schedule = data.schedule || {};
-  state.clockOffset = data.clockOffset || 0;
-  state.reviewMode = false;
-  state.reviewQueue = [];
-
-  const params = data.params || DEFAULT_BKT;
-  state.model = new MasteryModel(state.concepts, params);
-  state.concepts.forEach((c) => {
-    (data.histories?.[c.id] || []).forEach((correct) => state.model.recordAnswer(c.id, correct));
-  });
-  // Let advanceToRecommended's learnAndApply() re-derive lastFit/paramReadout
-  // from the replayed history rather than guessing at a stale observation count.
-
-  return true;
-}
-
-/** Clears the saved session (fresh material, or explicit "start over"). */
-function clearSession() {
-  localStorage.removeItem(SAVE_KEY);
-}
+// saveSession/loadSession/clearSession now live in persist.js as
+// Session.save(state)/Session.load(state)/Session.clear() — call sites
+// below pass this app's `state` object explicitly.
 
 function renderQuestion() {
   const concept = state.currentConcept;
@@ -1306,7 +898,7 @@ function handleAnswer(chosenIdx) {
     }
   });
   els.quizPanel.appendChild(nextBtn);
-  saveSession();
+  Session.save(state);
 }
 
 /**

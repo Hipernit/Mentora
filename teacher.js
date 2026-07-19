@@ -11,20 +11,11 @@
  * real analytics.
  */
 
-// Same dependency graph as app.js's bundled demo lesson (photosynthesis),
-// duplicated here since this page doesn't load app.js.
-const CONCEPTS = [
-  { id: "c1", label: "Purpose of photosynthesis", dependsOn: [] },
-  { id: "c2", label: "Light-dependent reactions", dependsOn: ["c1"] },
-  { id: "c3", label: "Calvin cycle (light-independent)", dependsOn: ["c2"] },
-  { id: "c4", label: "Role of chlorophyll", dependsOn: ["c1"] },
-  { id: "c5", label: "Why plants appear green", dependsOn: ["c4"] },
-];
-
-// Matches the tuning in app.js — see the comment there for why this is
-// harder than textbook BKT defaults.
-const BKT_PARAMS = { pInit: 0.2, pLearn: 0.22, pSlip: 0.08, pGuess: 0.25 };
-const THRESHOLD = 0.9;
+// DEMO_CONCEPTS, BKT_PARAMS, and MASTERY_THRESHOLD (matching app.js's tuning
+// and demo lesson) come from demo-data.js, loaded via <script> before this
+// file (see teacher.html). Aliased locally as CONCEPTS so the rest of this
+// file can keep reading "the concept graph" without saying "DEMO_" everywhere.
+const CONCEPTS = DEMO_CONCEPTS;
 
 const FIRST_NAMES = [
   "Amara", "Beckett", "Carmen", "Devon", "Elif", "Farid", "Greta", "Hiro",
@@ -58,13 +49,13 @@ function simulateStudent() {
   const aptitude = 0.35 + Math.random() * 0.55;
 
   CONCEPTS.forEach((c) => {
-    const depsMet = (c.dependsOn || []).every((d) => model.tracers[d].isMastered(THRESHOLD));
+    const depsMet = (c.dependsOn || []).every((d) => model.tracers[d].isMastered(MASTERY_THRESHOLD));
     if (!depsMet) return; // student never reaches a locked concept, same as real UI
     let attempts = 0;
     // Matches app.js's MAX_ATTEMPTS_PER_CONCEPT — same per-concept attempt
     // budget as a real lesson, so the simulated class reflects the same
     // pass/fail dynamics a real student would see.
-    while (attempts < 5 && !model.tracers[c.id].isMastered(THRESHOLD)) {
+    while (attempts < 5 && !model.tracers[c.id].isMastered(MASTERY_THRESHOLD)) {
       const correct = Math.random() < aptitude;
       model.recordAnswer(c.id, correct);
       attempts++;
@@ -125,12 +116,12 @@ function renderRiskList() {
   classModels.forEach((model, i) => {
     CONCEPTS.forEach((c) => {
       const tracer = model.tracers[c.id];
-      const depsMet = (c.dependsOn || []).every((d) => model.tracers[d].isMastered(THRESHOLD));
+      const depsMet = (c.dependsOn || []).every((d) => model.tracers[d].isMastered(MASTERY_THRESHOLD));
       // Actively stuck: prerequisites cleared, but this concept still isn't
       // mastered despite having had attempts (attempts > 0 rules out students
       // who simply haven't reached it via the sequential simulation, though
       // with depsMet true here that's already effectively guaranteed).
-      if (depsMet && !tracer.isMastered(THRESHOLD) && tracer.history.length > 0) {
+      if (depsMet && !tracer.isMastered(MASTERY_THRESHOLD) && tracer.history.length > 0) {
         flagged.push({ name: classNames[i], concept: c.label, pct: Math.round(tracer.mastery * 100) });
       }
     });

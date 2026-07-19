@@ -35,16 +35,12 @@
  *    a real predictive test, not a tautology.
  */
 
-// Same 5-concept photosynthesis graph and BKT tuning as app.js / teacher.js.
-const CONCEPTS = [
-  { id: "c1", label: "Purpose of photosynthesis", dependsOn: [] },
-  { id: "c2", label: "Light-dependent reactions", dependsOn: ["c1"] },
-  { id: "c3", label: "Calvin cycle (light-independent)", dependsOn: ["c2"] },
-  { id: "c4", label: "Role of chlorophyll", dependsOn: ["c1"] },
-  { id: "c5", label: "Why plants appear green", dependsOn: ["c4"] },
-];
-const BKT_PARAMS = { pInit: 0.2, pLearn: 0.22, pSlip: 0.08, pGuess: 0.25 };
-const THRESHOLD = 0.9;
+// DEMO_CONCEPTS, BKT_PARAMS, and MASTERY_THRESHOLD come from demo-data.js —
+// the same graph/tuning app.js and teacher.js simulate against, loaded via
+// <script> before this file (see eval.html). Aliased locally as CONCEPTS so
+// the rest of this file (and its comments) can keep reading "the concept
+// graph" without every reference saying "DEMO_".
+const CONCEPTS = DEMO_CONCEPTS;
 const MAX_QUESTIONS = 500; // safety cap for the unbounded efficiency simulation
 const MAX_ATTEMPTS_PER_CONCEPT = 5; // matches app.js's real per-concept attempt budget
 
@@ -70,7 +66,7 @@ function simulateToConvergence(strategy, trueMastery) {
   while (count < MAX_QUESTIONS) {
     let targetId;
     if (strategy === "adaptive") {
-      const next = model.recommendNext(THRESHOLD);
+      const next = model.recommendNext(MASTERY_THRESHOLD);
       if (!next) break; // fully mastered under the real recommendation logic
       targetId = next.id;
     } else {
@@ -84,7 +80,7 @@ function simulateToConvergence(strategy, trueMastery) {
     const correct = Math.random() < pCorrectFor(trueMastery[targetId]);
     model.recordAnswer(targetId, correct);
     count++;
-    if (strategy === "random" && CONCEPTS.every((c) => model.tracers[c.id].isMastered(THRESHOLD))) break;
+    if (strategy === "random" && CONCEPTS.every((c) => model.tracers[c.id].isMastered(MASTERY_THRESHOLD))) break;
   }
 
   return { questionsUsed: count, converged: count < MAX_QUESTIONS };
@@ -98,9 +94,9 @@ function simulateBoundedCourse(trueMastery) {
   while (visited.size < CONCEPTS.length) {
     const candidates = CONCEPTS.filter((c) => {
       if (visited.has(c.id)) return false;
-      if (model.tracers[c.id].isMastered(THRESHOLD)) return false;
+      if (model.tracers[c.id].isMastered(MASTERY_THRESHOLD)) return false;
       const deps = c.dependsOn || [];
-      return deps.every((d) => visited.has(d) || model.tracers[d].isMastered(THRESHOLD));
+      return deps.every((d) => visited.has(d) || model.tracers[d].isMastered(MASTERY_THRESHOLD));
     });
     let target;
     if (candidates.length === 0) {
@@ -114,7 +110,7 @@ function simulateBoundedCourse(trueMastery) {
       target = candidates[0];
     }
     let attempts = 0;
-    while (attempts < MAX_ATTEMPTS_PER_CONCEPT && !model.tracers[target.id].isMastered(THRESHOLD)) {
+    while (attempts < MAX_ATTEMPTS_PER_CONCEPT && !model.tracers[target.id].isMastered(MASTERY_THRESHOLD)) {
       const correct = Math.random() < pCorrectFor(trueMastery[target.id]);
       model.recordAnswer(target.id, correct);
       attempts++;

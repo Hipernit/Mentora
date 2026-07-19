@@ -16,24 +16,51 @@ python3 -m http.server 8000
 
 Click **"Try Demo"** to run the full adaptive-learning loop instantly with a bundled photosynthesis lesson — no API key required.
 
-To use your own material, paste a Claude API key (get one at console.anthropic.com) into the key field — it's stored only in your browser's `localStorage`, never sent anywhere but Anthropic's API.
+To use your own material, pick a provider and paste an API key into the key field — it's stored only in your browser's `localStorage`, never sent anywhere but that provider's API. Gemini is the default (free tier, no card, no expiration); Claude, DeepSeek, and GitHub Models are also supported as fallbacks if a free tier's rate limit gets hit mid-lesson.
+
+## Pages
+
+- `index.html` — the live lesson: paste material (or try the demo), get quizzed, watch mastery update
+- `how-it-works.html` — an interactive BKT simulator explaining how the model works
+- `teacher.html` — a classroom rollup: simulates a class of synthetic students through the same model to show a mastery heatmap
+- `eval.html` — an evaluation harness that measures how much faster/more reliably adaptive ordering converges than random-order quizzing
 
 ## Architecture
 
 ```
-index.html   — UI shell
-style.css    — styling
-bkt.js       — Bayesian Knowledge Tracing engine (pure logic, no DOM, unit-tested)
-app.js       — Claude API calls + UI orchestration + demo dataset
-bkt.test.js  — unit tests for bkt.js (run: node bkt.test.js)
+index.html, how-it-works.html, teacher.html, eval.html  — the four pages above
+style.css, explainer.css, teacher.css, eval.css          — per-page styling
+
+bkt.js        — Bayesian Knowledge Tracing engine (pure logic, no DOM, unit-tested)
+bktFit.js     — fits BKT parameters to a student's actual answers by maximum likelihood
+spaced.js     — spaced-repetition scheduling (retention decay, due dates)
+demo-data.js  — the bundled photosynthesis demo lesson + BKT tuning defaults,
+                shared by app.js/eval.js/teacher.js so their three "simulations"
+                of the same lesson can't drift out of sync with each other
+
+providers.js  — multi-provider LLM API layer (Claude/Gemini/DeepSeek/GitHub
+                Models), state-free like bkt.js — takes provider/key/prompt as
+                plain arguments, returns text or throws
+persist.js    — full-session persistence to localStorage (resume mid-lesson)
+app.js        — UI orchestration + state for the live lesson (index.html)
+
+eval.js       — drives eval.html's simulated evaluation harness
+teacher.js    — drives teacher.html's classroom simulator
+explainer.js  — drives how-it-works.html's interactive BKT simulator
+
+*.test.js     — unit tests (run: node <file>.test.js, or see below)
 ```
 
-`bkt.js` has zero dependency on the DOM or Claude — it's a standalone, reusable mastery-tracking library. `app.js` is the only file that touches the network or the page.
+`bkt.js`, `bktFit.js`, `spaced.js`, `demo-data.js`, and `providers.js` have zero dependency on the DOM — each is a standalone module that could be reused or tested outside the browser. `app.js`, `eval.js`, `teacher.js`, and `explainer.js` are the only files that touch the page (and `providers.js`, only via `app.js`, ever touches the network).
 
 ## Run tests
 
 ```bash
 node bkt.test.js
+node bktFit.test.js
+node spaced.test.js
+node persist.test.js
+node confidence.test.js
 ```
 
 ## Files in this submission
