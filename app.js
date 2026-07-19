@@ -54,7 +54,8 @@ const PROVIDERS = {
 const state = {
   provider: localStorage.getItem("mentora_provider") || "gemini",
   concepts: [],
-  quizzes: {}, // conceptId -> [{q, choices, answerIndex}]
+  quizzes: {}, // conceptId -> [{q, choices: [{text, correct, misconceptionId}]}]
+  misconceptions: {}, // conceptId -> [{id, label}] fixed taxonomy, so tags aggregate across questions
   model: null, // MasteryModel instance
   currentConcept: null,
   currentQuestionIdx: 0,
@@ -229,14 +230,134 @@ ${material}
   return extractJson(text);
 }
 
-async function generateQuiz(concept, material) {
+/**
+ * Validates and repairs an LLM-extracted concept graph before it ever reaches
+ * the MasteryModel. Live-generated `dependsOn` arrays can reference ids that
+ * don't exist, or form a cycle (A needs B needs A) — either one makes
+ * recommendNext() find no ready concept forever, silently presenting a stuck
+ * lesson as "end of lesson, mastered what's reachable" (see advanceToRecommended).
+ * This makes the graph a guaranteed DAG over real ids before that ever runs:
+ * dangling references are dropped, and cycles are broken by cutting the
+ * back-edge found during a DFS pass (keeps forward edges, drops the one edge
+ * that closes the loop). Returns { concepts, repaired } — repaired is true if
+ * anything had to be fixed, so callers can log/flag it without alarming the UI.
+ */
+function validateAndRepairGraph(rawConcepts) {
+  if (!Array.isArray(rawConcepts) || !rawConcepts.length) {
+    throw new Error("Concept extraction returned no concepts");
+  }
+  let repaired = false;
+  const ids = new Set(rawConcepts.map((c) => c.id));
+  // Drop dangling deps (unknown ids) and self-deps.
+  const concepts = rawConcepts.map((c) => {
+    const before = c.dependsOn || [];
+    const deps = before.filter((d) => ids.has(d) && d !== c.id);
+    if (deps.length !== before.length) repaired = true;
+    return { ...c, dependsOn: deps };
+  });
+  const byId = Object.fromEntries(concepts.map((c) => [c.id, c]));
+  // DFS cycle-breaking: WHITE = unvisited, GRAY = on the current path (a dep
+  // pointing back into GRAY territory is a cycle), BLACK = fully resolved.
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = Object.fromEntries(concepts.map((c) => [c.id, WHITE]));
+  function dfs(id) {
+    color[id] = GRAY;
+    const c = byId[id];
+    c.dependsOn = c.dependsOn.filter((d) => {
+      if (color[d] === GRAY) {
+        repaired = true; // back-edge -> cycle, cut it
+        return false;
+      }
+      if (color[d] === WHITE) dfs(d);
+      return true;
+    });
+    color[id] = BLACK;
+  }
+  concepts.forEach((c) => {
+    if (color[c.id] === WHITE) dfs(c.id);
+  });
+  return { concepts, repaired };
+}
+
+/**
+ * Generates a fixed, named misconception taxonomy for one concept (3-4 short
+ * ids like "confuses inputs and outputs"), once, before any quiz questions are
+ * written. Every wrong choice in that concept's quiz is then tagged against
+ * this SAME small list (see generateQuiz), instead of the LLM inventing a new
+ * free-text label per question. Free-text-per-question labels can't be
+ * string-matched against each other, so "3 students share this misconception"
+ * is impossible to compute honestly; a fixed per-concept taxonomy is what
+ * makes that aggregation real once real students start using the tool.
+ */
+async function generateMisconceptionTaxonomy(concept, material) {
+  const prompt = `For the concept "${concept.label}" from this material, list 3 to 4 SPECIFIC, DISTINCT misconceptions a student might genuinely hold — real conceptual errors, not "doesn't know the answer" or "picked randomly". Each is a short named category (a few words, not a full sentence).
+Material:
+"""
+${material}
+"""
+Return ONLY valid JSON: [{"id":"m1","label":"short misconception name"}, {"id":"m2","label":"..."}]`;
+  const text = await callLLM(prompt, 400);
+  const taxonomy = extractJson(text);
+  return Array.isArray(taxonomy) && taxonomy.length ? taxonomy : [{ id: "m1", label: "general misunderstanding" }];
+}
+
+async function generateQuiz(concept, material, taxonomy) {
+  const taxonomyList = (taxonomy || []).map((m) => `${m.id}: ${m.label}`).join("\n");
   const prompt = `Write exactly 3 multiple-choice questions (4 options each) testing understanding of the concept "${concept.label}", based on this material:
 """
 ${material}
 """
-Return ONLY valid JSON: [{"q":"...","choices":["a","b","c","d"],"answerIndex":0}, ...]. Vary difficulty slightly across the 3 questions.`;
-  const text = await callLLM(prompt, 900);
-  return extractJson(text);
+Each question has exactly one correct choice and three incorrect choices. Every incorrect choice MUST be tagged with the id of the closest-matching misconception from this fixed taxonomy (reuse ids across questions where they fit — don't invent new ones):
+${taxonomyList}
+
+Return ONLY valid JSON: [{"q":"...","choices":[{"text":"...","correct":true},{"text":"...","correct":false,"misconceptionId":"m1"},{"text":"...","correct":false,"misconceptionId":"m2"},{"text":"...","correct":false,"misconceptionId":"m1"}]}, ...]. Vary difficulty slightly across the 3 questions.`;
+  const text = await callLLM(prompt, 1100);
+  return sanitizeQuiz(extractJson(text), taxonomy);
+}
+
+/**
+ * Defends against non-compliant LLM output before it reaches the UI/BKT:
+ * guarantees every question has exactly one `correct` choice (first "correct"
+ * wins if the model marked more than one; if it marked none, the first choice
+ * is forced correct rather than silently shipping an unanswerable question),
+ * normalizes choices to plain string-or-object input, and drops any
+ * misconceptionId that doesn't exist in this concept's taxonomy (stray/typo'd
+ * ids becoming untagged rather than silently corrupting aggregation later).
+ */
+function sanitizeQuiz(rawQuiz, taxonomy) {
+  const validIds = new Set((taxonomy || []).map((m) => m.id));
+  return (Array.isArray(rawQuiz) ? rawQuiz : [])
+    .map((item) => {
+      const rawChoices = Array.isArray(item.choices) ? item.choices : [];
+      let correctSeen = false;
+      const choices = rawChoices.map((ch) => {
+        const isObj = ch && typeof ch === "object";
+        const text = String(isObj ? ch.text ?? "" : ch ?? "").trim();
+        const claimedCorrect = isObj ? !!ch.correct : false;
+        const isCorrect = claimedCorrect && !correctSeen;
+        if (isCorrect) correctSeen = true;
+        const misconceptionId = !isCorrect && isObj && validIds.has(ch.misconceptionId) ? ch.misconceptionId : null;
+        return { text, correct: isCorrect, misconceptionId };
+      });
+      if (!correctSeen && choices.length) choices[0].correct = true;
+      return { q: String(item.q || item.question || "").trim(), choices };
+    })
+    .filter((item) => item.q && item.choices.filter((c) => c.text).length >= 2);
+}
+
+/** Fisher-Yates shuffles a question's choices in place. Correctness and the
+ * misconception tag live ON each choice object, so shuffling the array is all
+ * that's needed to randomize the answer position — nothing to remap. Fixes
+ * the "correct answer is always the first/textbook-sounding option" pattern
+ * that both the bundled demo data and raw LLM output are prone to, which a
+ * test-wise student can exploit without understanding anything. */
+function shuffleChoices(question) {
+  const choices = question.choices.slice();
+  for (let i = choices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [choices[i], choices[j]] = [choices[j], choices[i]];
+  }
+  return { ...question, choices };
 }
 
 async function generateAnalogyExplanation(concept, material, domain) {
@@ -275,31 +396,134 @@ const DEMO_CONCEPTS = [
   { id: "c5", label: "Why plants appear green", dependsOn: ["c4"] },
 ];
 
-const DEMO_QUIZZES = {
+const DEMO_MISCONCEPTIONS = {
   c1: [
-    { q: "What is the overall purpose of photosynthesis?", choices: ["Convert light energy into chemical energy", "Convert CO2 into oxygen only", "Break down glucose for energy", "Absorb water from soil"], answerIndex: 0 },
-    { q: "Which of these is a direct product of photosynthesis?", choices: ["Glucose", "Nitrogen", "Ozone", "Salt"], answerIndex: 0 },
-    { q: "Photosynthesis primarily occurs in which organelle?", choices: ["Chloroplast", "Mitochondrion", "Nucleus", "Ribosome"], answerIndex: 0 },
+    { id: "m1", label: "You're likely conflating what photosynthesis produces with what it consumes — it stores energy in glucose, rather than only making oxygen or breaking sugar down." },
+    { id: "m2", label: "You're likely mixing photosynthesis up with cellular respiration — photosynthesis builds glucose, it doesn't release energy from it." },
+    { id: "m3", label: "You may be placing photosynthesis in the wrong organelle — it happens in the chloroplast, not elsewhere in the cell." },
   ],
   c2: [
-    { q: "Where do light-dependent reactions occur?", choices: ["Thylakoid membrane", "Stroma", "Cytoplasm", "Cell wall"], answerIndex: 0 },
-    { q: "What do light-dependent reactions produce?", choices: ["ATP and NADPH", "Glucose directly", "CO2", "Chlorophyll"], answerIndex: 0 },
-    { q: "What molecule is split during light-dependent reactions, releasing oxygen?", choices: ["Water", "Glucose", "Carbon dioxide", "ATP"], answerIndex: 0 },
+    { id: "m1", label: "You may be mixing up where the light-dependent reactions happen — they run in the thylakoid membrane, not the stroma or cytoplasm." },
+    { id: "m2", label: "You're likely attributing the Calvin cycle's output (glucose) to the light reactions — the light reactions produce ATP and NADPH, not glucose directly." },
+    { id: "m3", label: "You may be confusing what gets split and what gets released — water is split to release oxygen, not the reverse." },
   ],
   c3: [
-    { q: "Where does the Calvin cycle occur?", choices: ["Stroma", "Thylakoid membrane", "Mitochondria", "Nucleus"], answerIndex: 0 },
-    { q: "What does the Calvin cycle use to fix carbon dioxide?", choices: ["ATP and NADPH", "Oxygen and water", "Chlorophyll only", "Sunlight directly"], answerIndex: 0 },
-    { q: "What is the end product of the Calvin cycle?", choices: ["Glucose", "Water", "Oxygen gas", "ATP"], answerIndex: 0 },
+    { id: "m1", label: "You're likely placing the Calvin cycle in the wrong compartment — it happens in the stroma, not the thylakoid membrane." },
+    { id: "m2", label: "You're likely confusing the Calvin cycle's inputs with the light reactions' — it consumes ATP and NADPH rather than using sunlight directly." },
+    { id: "m3", label: "You may be mixing up the Calvin cycle's end product with one of its inputs — glucose is what comes out, not what goes in." },
   ],
   c4: [
-    { q: "What is the main pigment involved in photosynthesis?", choices: ["Chlorophyll", "Carotene", "Melanin", "Hemoglobin"], answerIndex: 0 },
-    { q: "What does chlorophyll primarily absorb?", choices: ["Red and blue light", "Green light", "Ultraviolet light", "Infrared light"], answerIndex: 0 },
-    { q: "Chlorophyll is located in which structure?", choices: ["Thylakoid membrane", "Cell wall", "Nucleus", "Ribosome"], answerIndex: 0 },
+    { id: "m1", label: "You may be naming the wrong pigment — chlorophyll, not carotene or melanin, is the main pigment driving photosynthesis." },
+    { id: "m2", label: "You're likely inverting what chlorophyll absorbs — it absorbs red and blue light, not green." },
+    { id: "m3", label: "You may be placing chlorophyll in the wrong structure — it sits in the thylakoid membrane." },
   ],
   c5: [
-    { q: "Why do plants appear green?", choices: ["Chlorophyll reflects green light", "Chlorophyll absorbs green light", "Plants lack pigment", "Green light is invisible"], answerIndex: 0 },
-    { q: "Which wavelengths are least absorbed by chlorophyll?", choices: ["Green", "Red", "Blue", "Violet"], answerIndex: 0 },
-    { q: "If a plant absorbed all wavelengths equally, it would appear:", choices: ["Black", "Green", "White", "Red"], answerIndex: 0 },
+    { id: "m1", label: "You're likely inverting absorption and reflection — plants look green because chlorophyll reflects green light, not because it absorbs it." },
+    { id: "m2", label: "You may be assuming plants lack pigment entirely, when the color comes from which wavelengths chlorophyll reflects versus absorbs." },
+    { id: "m3", label: "You're likely reasoning about wavelengths backwards — green is the LEAST absorbed, which is why it's reflected back to your eye." },
+  ],
+};
+
+const DEMO_QUIZZES = {
+  c1: [
+    { q: "What is the overall purpose of photosynthesis?", choices: [
+      { text: "Convert light energy into chemical energy", correct: true },
+      { text: "Convert CO2 into oxygen only", correct: false, misconceptionId: "m1" },
+      { text: "Break down glucose for energy", correct: false, misconceptionId: "m2" },
+      { text: "Absorb water from soil", correct: false, misconceptionId: "m3" },
+    ] },
+    { q: "Which of these is a direct product of photosynthesis?", choices: [
+      { text: "Glucose", correct: true },
+      { text: "Nitrogen", correct: false, misconceptionId: "m1" },
+      { text: "Ozone", correct: false, misconceptionId: "m3" },
+      { text: "Salt", correct: false, misconceptionId: "m2" },
+    ] },
+    { q: "Photosynthesis primarily occurs in which organelle?", choices: [
+      { text: "Chloroplast", correct: true },
+      { text: "Mitochondrion", correct: false, misconceptionId: "m2" },
+      { text: "Nucleus", correct: false, misconceptionId: "m3" },
+      { text: "Ribosome", correct: false, misconceptionId: "m3" },
+    ] },
+  ],
+  c2: [
+    { q: "Where do light-dependent reactions occur?", choices: [
+      { text: "Thylakoid membrane", correct: true },
+      { text: "Stroma", correct: false, misconceptionId: "m1" },
+      { text: "Cytoplasm", correct: false, misconceptionId: "m1" },
+      { text: "Cell wall", correct: false, misconceptionId: "m1" },
+    ] },
+    { q: "What do light-dependent reactions produce?", choices: [
+      { text: "ATP and NADPH", correct: true },
+      { text: "Glucose directly", correct: false, misconceptionId: "m2" },
+      { text: "CO2", correct: false, misconceptionId: "m2" },
+      { text: "Chlorophyll", correct: false, misconceptionId: "m2" },
+    ] },
+    { q: "What molecule is split during light-dependent reactions, releasing oxygen?", choices: [
+      { text: "Water", correct: true },
+      { text: "Glucose", correct: false, misconceptionId: "m3" },
+      { text: "Carbon dioxide", correct: false, misconceptionId: "m3" },
+      { text: "ATP", correct: false, misconceptionId: "m3" },
+    ] },
+  ],
+  c3: [
+    { q: "Where does the Calvin cycle occur?", choices: [
+      { text: "Stroma", correct: true },
+      { text: "Thylakoid membrane", correct: false, misconceptionId: "m1" },
+      { text: "Mitochondria", correct: false, misconceptionId: "m1" },
+      { text: "Nucleus", correct: false, misconceptionId: "m1" },
+    ] },
+    { q: "What does the Calvin cycle use to fix carbon dioxide?", choices: [
+      { text: "ATP and NADPH", correct: true },
+      { text: "Oxygen and water", correct: false, misconceptionId: "m2" },
+      { text: "Chlorophyll only", correct: false, misconceptionId: "m2" },
+      { text: "Sunlight directly", correct: false, misconceptionId: "m2" },
+    ] },
+    { q: "What is the end product of the Calvin cycle?", choices: [
+      { text: "Glucose", correct: true },
+      { text: "Water", correct: false, misconceptionId: "m3" },
+      { text: "Oxygen gas", correct: false, misconceptionId: "m3" },
+      { text: "ATP", correct: false, misconceptionId: "m3" },
+    ] },
+  ],
+  c4: [
+    { q: "What is the main pigment involved in photosynthesis?", choices: [
+      { text: "Chlorophyll", correct: true },
+      { text: "Carotene", correct: false, misconceptionId: "m1" },
+      { text: "Melanin", correct: false, misconceptionId: "m1" },
+      { text: "Hemoglobin", correct: false, misconceptionId: "m1" },
+    ] },
+    { q: "What does chlorophyll primarily absorb?", choices: [
+      { text: "Red and blue light", correct: true },
+      { text: "Green light", correct: false, misconceptionId: "m2" },
+      { text: "Ultraviolet light", correct: false, misconceptionId: "m2" },
+      { text: "Infrared light", correct: false, misconceptionId: "m2" },
+    ] },
+    { q: "Chlorophyll is located in which structure?", choices: [
+      { text: "Thylakoid membrane", correct: true },
+      { text: "Cell wall", correct: false, misconceptionId: "m3" },
+      { text: "Nucleus", correct: false, misconceptionId: "m3" },
+      { text: "Ribosome", correct: false, misconceptionId: "m3" },
+    ] },
+  ],
+  c5: [
+    { q: "Why do plants appear green?", choices: [
+      { text: "Chlorophyll reflects green light", correct: true },
+      { text: "Chlorophyll absorbs green light", correct: false, misconceptionId: "m1" },
+      { text: "Plants lack pigment", correct: false, misconceptionId: "m2" },
+      { text: "Green light is invisible", correct: false, misconceptionId: "m2" },
+    ] },
+    { q: "Which wavelengths are least absorbed by chlorophyll?", choices: [
+      { text: "Green", correct: true },
+      { text: "Red", correct: false, misconceptionId: "m3" },
+      { text: "Blue", correct: false, misconceptionId: "m3" },
+      { text: "Violet", correct: false, misconceptionId: "m3" },
+    ] },
+    { q: "If a plant absorbed all wavelengths equally, it would appear:", choices: [
+      { text: "Black", correct: true },
+      { text: "Green", correct: false, misconceptionId: "m1" },
+      { text: "White", correct: false, misconceptionId: "m1" },
+      { text: "Red", correct: false, misconceptionId: "m1" },
+    ] },
   ],
 };
 
@@ -320,15 +544,31 @@ async function generateCourse(demo) {
     } else {
       showLoading(true, `Extracting concepts with ${PROVIDERS[state.provider].label}...`);
     }
-    state.concepts = demo ? DEMO_CONCEPTS : await extractConcepts(material);
+    const rawConcepts = demo ? DEMO_CONCEPTS : await extractConcepts(material);
+    // Live extraction can emit a dangling or cyclic dependsOn graph (references
+    // to ids that don't exist, or A depends on B depends on A) — either one
+    // makes recommendNext() stall forever, so the graph is validated/repaired
+    // before anything else touches it. See validateAndRepairGraph() above.
+    const { concepts: safeConcepts, repaired } = validateAndRepairGraph(rawConcepts);
+    if (repaired) console.warn("Mentora: concept graph had dangling or cyclic dependencies — auto-repaired.");
+    state.concepts = safeConcepts;
+    state.quizzes = {};
+    state.misconceptions = {};
 
     if (demo) {
-      state.quizzes = DEMO_QUIZZES;
+      state.concepts.forEach((c) => {
+        state.misconceptions[c.id] = DEMO_MISCONCEPTIONS[c.id] || [];
+        state.quizzes[c.id] = (DEMO_QUIZZES[c.id] || []).map(shuffleChoices);
+      });
     } else {
       for (let i = 0; i < state.concepts.length; i++) {
         const c = state.concepts[i];
+        showLoading(true, `Mapping misconceptions ${i + 1} of ${state.concepts.length}: ${c.label}...`);
+        const taxonomy = await generateMisconceptionTaxonomy(c, material);
+        state.misconceptions[c.id] = taxonomy;
         showLoading(true, `Writing quiz ${i + 1} of ${state.concepts.length}: ${c.label}...`);
-        state.quizzes[c.id] = await generateQuiz(c, material);
+        const quiz = await generateQuiz(c, material, taxonomy);
+        state.quizzes[c.id] = quiz.map(shuffleChoices);
       }
     }
 
@@ -782,6 +1022,7 @@ function saveSession() {
   const payload = {
     concepts: state.concepts,
     quizzes: state.quizzes,
+    misconceptions: state.misconceptions,
     material: state.material,
     demoMode: state.demoMode,
     calibration: state.calibration,
@@ -818,6 +1059,7 @@ function loadSession() {
 
   state.concepts = data.concepts;
   state.quizzes = data.quizzes || {};
+  state.misconceptions = data.misconceptions || {};
   state.material = data.material || "";
   state.demoMode = !!data.demoMode;
   state.calibration = data.calibration || [];
@@ -857,7 +1099,7 @@ function renderQuestion() {
       <button type="button" class="confidence-btn" data-confident="false">Not sure</button>
     </div>
     <div class="choices">
-      ${q.choices.map((c, i) => `<button class="choice-btn" data-i="${i}">${c}</button>`).join("")}
+      ${q.choices.map((c, i) => `<button class="choice-btn" data-i="${i}">${c.text}</button>`).join("")}
     </div>
   `;
   els.quizPanel.querySelectorAll(".confidence-btn").forEach((btn) => {
@@ -869,11 +1111,13 @@ function renderQuestion() {
     });
   });
   els.quizPanel.querySelectorAll(".choice-btn").forEach((btn) => {
-    btn.addEventListener("click", () => handleAnswer(parseInt(btn.dataset.i, 10), q.answerIndex));
+    btn.addEventListener("click", () => handleAnswer(parseInt(btn.dataset.i, 10)));
   });
 }
 
-function handleAnswer(chosenIdx, correctIdx) {
+function handleAnswer(chosenIdx) {
+  const q = state.currentQuestion;
+  const correctIdx = q.choices.findIndex((c) => c.correct);
   const correct = chosenIdx === correctIdx;
   const concept = state.currentConcept;
   // Whichever confidence toggle the student left active when they clicked an
@@ -914,7 +1158,7 @@ function handleAnswer(chosenIdx, correctIdx) {
   els.quizPanel.appendChild(feedback);
 
   if (!correct) {
-    diagnoseAndShowMisconception(concept, state.currentQuestion, chosenIdx, correctIdx);
+    diagnoseAndShowMisconception(concept, q, chosenIdx, correctIdx);
     offerAnalogyReview(concept);
   }
 
@@ -941,11 +1185,18 @@ function handleAnswer(chosenIdx, correctIdx) {
   saveSession();
 }
 
-/** Shows the specific misconception behind a wrong answer (LLM live, or a bank in demo mode). */
+/**
+ * Shows the specific misconception behind a wrong answer. Live mode still asks
+ * the LLM for a fresh, personalized "You're likely..." sentence (better UX
+ * than a canned label) — but the chosen choice ALSO carries a misconceptionId
+ * from this concept's fixed taxonomy (see generateQuiz/sanitizeQuiz), tagged
+ * here for anything downstream that wants to aggregate misconceptions across
+ * questions/students rather than string-matching free text.
+ */
 function diagnoseAndShowMisconception(concept, q, chosenIdx, correctIdx) {
   if (!q) return;
-  const chosenText = q.choices[chosenIdx];
-  const correctText = q.choices[correctIdx];
+  const chosen = q.choices[chosenIdx];
+  const correctChoice = q.choices[correctIdx];
   const el = document.createElement("div");
   el.className = "misconception";
   el.innerHTML =
@@ -954,23 +1205,19 @@ function diagnoseAndShowMisconception(concept, q, chosenIdx, correctIdx) {
   els.quizPanel.appendChild(el);
   const textEl = el.querySelector(".misconception-text");
   if (state.demoMode) {
-    textEl.textContent = demoMisconception(concept, chosenIdx, correctIdx);
+    textEl.textContent = demoMisconception(concept, chosen);
     return;
   }
-  diagnoseMisconception(concept, q, chosenText, correctText)
+  diagnoseMisconception(concept, q, chosen.text, correctChoice.text)
     .then((t) => (textEl.textContent = (t || "").trim() || "Look again at what this concept specifically does."))
     .catch(() => el.remove());
 }
 
-function demoMisconception(concept, chosenIdx, correctIdx) {
-  const byConcept = {
-    c1: "You're likely conflating what photosynthesis produces with what it consumes — it stores energy in glucose, rather than only making oxygen or breaking sugar down.",
-    c2: "You may be mixing up where the light-dependent reactions happen and what they output — they run in the thylakoid membrane and yield ATP/NADPH, not glucose.",
-    c3: "You're likely confusing the Calvin cycle's inputs with the light reactions — it consumes ATP and NADPH in the stroma rather than using sunlight directly.",
-    c4: "You may be mis-associating chlorophyll's role — it absorbs red and blue light to power the reactions, rather than absorbing the green it reflects.",
-    c5: "You're likely inverting absorption and reflection — plants look green because chlorophyll reflects green light, not because it absorbs it.",
-  };
-  return byConcept[concept.id] || "You're likely mixing this concept up with a closely related one — look again at what it specifically does.";
+/** Looks up the demo-mode sentence for the taxonomy id tagged on the chosen (wrong) choice. */
+function demoMisconception(concept, chosenChoice) {
+  const taxonomy = state.misconceptions?.[concept.id] || DEMO_MISCONCEPTIONS[concept.id] || [];
+  const match = taxonomy.find((m) => m.id === chosenChoice?.misconceptionId);
+  return match?.label || "You're likely mixing this concept up with a closely related one — look again at what it specifically does.";
 }
 
 function offerAnalogyReview(concept) {
