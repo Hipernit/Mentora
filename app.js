@@ -324,6 +324,28 @@ function extractJson(text) {
   return JSON.parse(match[0]);
 }
 
+/**
+ * Calls the LLM and parses its response as JSON, retrying with a FRESH
+ * generation (a new sample, not just a backoff wait like withRetry's 429
+ * handling) if the output isn't valid JSON. Smaller/faster models — seen in
+ * practice with GitHub Models' gpt-4o-mini — are more prone than
+ * Gemini/Claude to truncating an array mid-response or dropping a comma.
+ * Since sampling is non-deterministic, a clean retry frequently just works
+ * where the first attempt produced malformed JSON.
+ */
+async function callLLMForJson(prompt, maxTokens = 1500, retries = 2) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const text = await callLLM(prompt, maxTokens);
+    try {
+      return extractJson(text);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new Error(`Model response wasn't valid JSON after ${retries + 1} attempt(s): ${lastErr.message}`);
+}
+
 async function extractConcepts(material) {
   const prompt = `You are building an adaptive tutor. From the study material below, extract 5 to 8 core concepts a student must understand, in dependency order (a concept can depend on earlier ones).
 
@@ -334,8 +356,7 @@ Study material:
 """
 ${material}
 """`;
-  const text = await callLLM(prompt, 800);
-  return extractJson(text);
+  return callLLMForJson(prompt, 1100);
 }
 
 /**
@@ -411,8 +432,7 @@ Step 2 — Quiz: write exactly 3 multiple-choice questions (4 options each) test
 Return ONLY valid JSON in this exact shape:
 {"misconceptions":[{"id":"m1","label":"short misconception name"},{"id":"m2","label":"..."}],
  "quiz":[{"q":"...","choices":[{"text":"...","correct":true},{"text":"...","correct":false,"misconceptionId":"m1"},{"text":"...","correct":false,"misconceptionId":"m2"},{"text":"...","correct":false,"misconceptionId":"m1"}]}, ...]}`;
-  const text = await callLLM(prompt, 1600);
-  const parsed = extractJson(text);
+  const parsed = await callLLMForJson(prompt, 2200);
   const taxonomy =
     Array.isArray(parsed.misconceptions) && parsed.misconceptions.length
       ? parsed.misconceptions
