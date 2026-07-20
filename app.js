@@ -282,8 +282,10 @@ function sanitizeQuiz(rawQuiz, taxonomy) {
  * misconception tag live ON each choice object, so shuffling the array is all
  * that's needed to randomize the answer position — nothing to remap. Fixes
  * the "correct answer is always the first/textbook-sounding option" pattern
- * that both the bundled demo data and raw LLM output are prone to, which a
- * test-wise student can exploit without understanding anything. */
+ * that raw LLM output is prone to, which a test-wise student could otherwise
+ * exploit without understanding anything. Only applied to live/LLM-generated
+ * quizzes — the bundled demo quiz is deliberately left unshuffled, see
+ * generateCourse(). */
 function shuffleChoices(question) {
   const choices = question.choices.slice();
   for (let i = choices.length - 1; i > 0; i--) {
@@ -351,9 +353,15 @@ async function generateCourse(demo) {
     state.misconceptions = {};
 
     if (demo) {
+      // Demo choices are NOT shuffled (unlike live/LLM-generated quizzes
+      // below) — every DEMO_QUIZZES question is authored with the correct
+      // choice listed first, so the demo lesson is scriptable: the correct
+      // answer is always option A. That's deliberate for recording a demo
+      // video or walking through it live, where you want to know which
+      // button to click without reading each question first.
       state.concepts.forEach((c) => {
         state.misconceptions[c.id] = DEMO_MISCONCEPTIONS[c.id] || [];
-        state.quizzes[c.id] = (DEMO_QUIZZES[c.id] || []).map(shuffleChoices);
+        state.quizzes[c.id] = DEMO_QUIZZES[c.id] || [];
       });
     } else {
       for (let i = 0; i < state.concepts.length; i++) {
