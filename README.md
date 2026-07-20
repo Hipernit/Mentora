@@ -31,7 +31,7 @@ To use your own material, pick a provider and paste an API key into the key fiel
 index.html, how-it-works.html, teacher.html, eval.html  — the four pages above
 style.css, explainer.css, teacher.css, eval.css          — per-page styling
 
-bkt.js        — Bayesian Knowledge Tracing engine (pure logic, no DOM, unit-tested)
+bkt.js        — Bayesian Knowledge Tracing engine (pure logic, no DOM)
 bktFit.js     — fits BKT parameters to a student's actual answers by maximum likelihood
 spaced.js     — spaced-repetition scheduling (retention decay, due dates)
 demo-data.js  — the bundled photosynthesis demo lesson + BKT tuning defaults,
@@ -47,24 +47,6 @@ app.js        — UI orchestration + state for the live lesson (index.html)
 eval.js       — drives eval.html's simulated evaluation harness
 teacher.js    — drives teacher.html's classroom simulator
 explainer.js  — drives how-it-works.html's interactive BKT simulator
-
-*.test.js     — unit tests (run: node <file>.test.js, or see below)
 ```
 
-`bkt.js`, `bktFit.js`, `spaced.js`, `demo-data.js`, and `providers.js` have zero dependency on the DOM — each is a standalone module that could be reused or tested outside the browser. `app.js`, `eval.js`, `teacher.js`, and `explainer.js` are the only files that touch the page (and `providers.js`, only via `app.js`, ever touches the network).
-
-## Run tests
-
-```bash
-node bkt.test.js
-node bktFit.test.js
-node spaced.test.js
-node persist.test.js
-node confidence.test.js
-```
-
-## Files in this submission
-
-- `RUBRIC_STRATEGY.md` — how each feature maps to the hackathon's 4 judging categories
-- `PITCH_SCRIPT.md` — full 2-minute demo video script + shot list
-- `SUBMISSION_DRAFT.md` — Devpost submission text, ready to paste in
+`bkt.js`, `bktFit.js`, `spaced.js`, `demo-data.js`, and `providers.js` have zero dependency on the DOM — each is a standalone module that could be reused outside the browser. `app.js`, `eval.js`, `teacher.js`, and `explainer.js` are the only files that touch the page (and `providers.js`, only via `app.js`, ever touches the network).
